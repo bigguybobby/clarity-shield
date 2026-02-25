@@ -1,0 +1,72 @@
+name: Clarity Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Make scanner executable
+        run: chmod +x clarity-shield
+      
+      - name: Run Clarity Shield
+        id: scan
+        run: |
+          ./clarity-shield scan test-contracts/ --recursive --format markdown
+          echo "scan_status=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+      
+      - name: Upload Markdown Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports-markdown
+          path: findings/*.md
+      
+      - name: Run JSON Scan
+        run: |
+          ./clarity-shield scan test-contracts/ --recursive --format json
+        continue-on-error: true
+      
+      - name: Upload JSON Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports-json
+          path: findings/*.json
+      
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const reports = fs.readdirSync('findings')
+              .filter(f => f.endsWith('.md'))
+              .map(f => fs.readFileSync(`findings/${f}`, 'utf8'))
+              .join('\n\n---\n\n');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🛡️ Clarity Shield Security Report\n\n${reports}`
+            });
+      
+      - name: Fail if critical issues found
+        if: steps.scan.outputs.scan_status == '2'
+        run: |
+          echo "❌ Critical security issues detected!"
+          exit 1

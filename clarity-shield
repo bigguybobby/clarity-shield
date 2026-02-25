@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""
+Clarity Shield - Security Scanner for Stacks Smart Contracts
+CLI wrapper for easy usage
+"""
+
+import sys
+import os
+import argparse
+from pathlib import Path
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent / 'src'))
+
+from scanner import ClarityScanner, generate_report
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='🛡️  Clarity Shield - Security Scanner for Stacks Smart Contracts',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  clarity-shield scan contract.clar
+  clarity-shield scan contract.clar --format json
+  clarity-shield scan contract.clar --output report.md
+  clarity-shield scan ./contracts/ --recursive
+  clarity-shield --version
+        """
+    )
+    
+    parser.add_argument('action', choices=['scan'], help='Action to perform')
+    parser.add_argument('path', help='Contract file or directory to scan')
+    parser.add_argument('--format', choices=['json', 'markdown'], default='markdown',
+                       help='Output format (default: markdown)')
+    parser.add_argument('--output', '-o', help='Output file path')
+    parser.add_argument('--recursive', '-r', action='store_true',
+                       help='Recursively scan directory')
+    parser.add_argument('--version', '-v', action='version', version='Clarity Shield 1.0.0')
+    
+    args = parser.parse_args()
+    
+    target_path = Path(args.path)
+    
+    if not target_path.exists():
+        print(f"❌ Error: Path '{args.path}' not found")
+        sys.exit(1)
+    
+    # Collect contract files
+    contracts = []
+    if target_path.is_file():
+        if target_path.suffix == '.clar':
+            contracts.append(target_path)
+        else:
+            print(f"❌ Error: '{args.path}' is not a .clar file")
+            sys.exit(1)
+    elif target_path.is_dir():
+        if args.recursive:
+            contracts = list(target_path.rglob('*.clar'))
+        else:
+            contracts = list(target_path.glob('*.clar'))
+        
+        if not contracts:
+            print(f"❌ No .clar files found in '{args.path}'")
+            sys.exit(1)
+    
+    print(f"🛡️  Clarity Shield v1.0.0")
+    print(f"📂 Found {len(contracts)} contract(s) to scan\n")
+    
+    all_findings = []
+    critical_count = 0
+    high_count = 0
+    
+    for contract_path in contracts:
+        print(f"{'='*60}")
+        scanner = ClarityScanner(str(contract_path))
+        findings = scanner.scan()
+        all_findings.extend(findings)
+        
+        # Count severity
+        critical_count += len([f for f in findings if f.severity == "CRITICAL"])
+        high_count += len([f for f in findings if f.severity == "HIGH"])
+        
+        # Generate individual report
+        report = generate_report(findings, scanner.contract_name, args.format)
+        
+        # Save report
+        if args.output:
+            output_path = Path(args.output)
+        else:
+            ext = 'json' if args.format == 'json' else 'md'
+            output_dir = Path('findings')
+            output_dir.mkdir(exist_ok=True)
+            output_path = output_dir / f"{scanner.contract_name}_report.{ext}"
+        
+        with open(output_path, 'w') as f:
+            f.write(report)
+        
+        print(f"📄 Report: {output_path}\n")
+    
+    # Summary
+    print(f"{'='*60}")
+    print(f"\n📊 SCAN SUMMARY")
+    print(f"Total Contracts: {len(contracts)}")
+    print(f"Total Findings: {len(all_findings)}")
+    print(f"🔴 Critical: {critical_count}")
+    print(f"🟠 High: {high_count}")
+    
+    if critical_count > 0:
+        print(f"\n⚠️  CRITICAL ISSUES FOUND - Review immediately!")
+        sys.exit(2)
+    elif high_count > 0:
+        print(f"\n⚠️  High severity issues found - Review recommended")
+        sys.exit(1)
+    else:
+        print(f"\n✅ No critical or high severity issues found")
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
