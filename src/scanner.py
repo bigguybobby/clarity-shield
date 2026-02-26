@@ -69,6 +69,9 @@ class ClarityScanner:
         self.check_reentrancy_patterns()
         self.check_magic_numbers()
         self.check_principal_injection()
+        self.check_unbounded_loops()
+        self.check_flash_loan_patterns()
+        self.check_missing_event_logging()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -566,6 +569,77 @@ class ClarityScanner:
                     "Trait Safety"
                 )
 
+    def check_unbounded_loops(self):
+        """Detect potential unbounded iteration patterns (DoS risk)"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            # fold and map over user-controlled lists
+            for op in ['fold', 'map', 'filter']:
+                if f'({op} ' in func_body:
+                    # Check if iterating over a variable-length input
+                    if any(k in func_body for k in ['(list ', 'get-list', 'contract-call?']):
+                        self.add_finding(
+                            Severity.MEDIUM,
+                            f"Potential Unbounded Iteration in '{func_name}'",
+                            f"Function uses '{op}' which may iterate over data of "
+                            "unbounded or user-controlled length. In Clarity, iterations "
+                            "consume compute units per element and can hit runtime limits.",
+                            func_start,
+                            func_lines[0] if func_lines else '',
+                            f"Ensure the list passed to '{op}' has a bounded, known maximum "
+                            "length. Use fixed-size lists and validate input length upfront.",
+                            "Denial of Service"
+                        )
+                    break
+
+    def check_flash_loan_patterns(self):
+        """Detect patterns vulnerable to flash loan manipulation"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            # Price reads followed by transfers in same function
+            has_price_read = any(k in func_body for k in [
+                'get-price', 'get-balance', 'get-reserve', 'get-rate',
+                'stx-get-balance', 'ft-get-balance', 'get-stx-balance'
+            ])
+            has_transfer = any(k in func_body for k in [
+                'stx-transfer?', 'ft-transfer?', 'ft-mint?'
+            ])
+            if has_price_read and has_transfer:
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Flash Loan Vulnerability Pattern in '{func_name}'",
+                    "Function reads a balance or price and then performs a token "
+                    "operation in the same transaction. An attacker could manipulate "
+                    "the price/balance via a flash loan before this function executes.",
+                    func_start,
+                    func_lines[0] if func_lines else '',
+                    "Use time-weighted average prices (TWAP) or oracles instead of "
+                    "spot balances. Add minimum delay between price reads and actions.",
+                    "Flash Loan"
+                )
+
+    def check_missing_event_logging(self):
+        """Detect state-changing functions without print events"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            # State changes: map-set, map-delete, var-set, stx-transfer, ft/nft ops
+            state_ops = ['map-set', 'map-delete', 'var-set', 'stx-transfer?',
+                        'ft-transfer?', 'ft-mint?', 'ft-burn?', 'nft-mint?', 'nft-burn?']
+            has_state_change = any(op in func_body for op in state_ops)
+            has_event = 'print' in func_body
+            if has_state_change and not has_event:
+                self.add_finding(
+                    Severity.LOW,
+                    f"Missing Event Logging in '{func_name}'",
+                    "Function modifies contract state but does not emit a print event. "
+                    "Events are critical for off-chain indexers, explorers, and audit trails.",
+                    func_start,
+                    func_lines[0] if func_lines else '',
+                    "Add (print { event: \"action-name\", ... }) to emit structured events "
+                    "for all state-changing operations.",
+                    "Best Practice"
+                )
+
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
@@ -727,7 +801,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.1.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.2.0")
 
     args = parser.parse_args()
 
