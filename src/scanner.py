@@ -8,7 +8,7 @@ import re
 import json
 import sys
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional
+from typing import List, Iterator, Tuple
 from pathlib import Path
 from enum import Enum
 from datetime import datetime
@@ -83,13 +83,73 @@ class ClarityScanner:
             category=category
         )
         self.findings.append(finding)
+
+    def _strip_comments(self, line: str) -> str:
+        """Remove Clarity line comments from a source line."""
+        return line.split(";;", 1)[0]
+
+    def _paren_delta(self, line: str) -> int:
+        """Track parenthesis balance while ignoring comments and string literals."""
+        code = self._strip_comments(line)
+        code = re.sub(r'"[^"]*"', '', code)
+        return code.count('(') - code.count(')')
+
+    def _iter_function_blocks(self, kind: str) -> Iterator[Tuple[str, int, int, List[str]]]:
+        """
+        Yield function blocks with balanced-paren boundaries.
+
+        Returns tuples of: (function_name, start_line, end_line, block_lines).
+        """
+        pattern = re.compile(rf'\(define-{re.escape(kind)}\s+\(([^\s)]+)')
+        i = 0
+        while i < len(self.lines):
+            line = self.lines[i]
+            match = pattern.search(self._strip_comments(line))
+            if not match:
+                i += 1
+                continue
+
+            func_name = match.group(1)
+            start_line = i + 1
+            block_lines = [line]
+            depth = self._paren_delta(line)
+            j = i + 1
+
+            while j < len(self.lines) and depth > 0:
+                block_lines.append(self.lines[j])
+                depth += self._paren_delta(self.lines[j])
+                j += 1
+
+            end_line = j if j > i else i + 1
+            yield func_name, start_line, end_line, block_lines
+            i = max(j, i + 1)
     
     def check_tx_sender_vs_contract_caller(self):
         """Detect authorization bypass via contract-caller misuse"""
-        pattern = r'contract-caller.*(?:admin|owner|authorized)'
-        
+        comparison_patterns = [
+            r'\(is-eq\s+contract-caller\s+([^)]+)\)',
+            r'\(is-eq\s+([^)]+)\s+contract-caller\)'
+        ]
+
         for i, line in enumerate(self.lines, 1):
-            if re.search(pattern, line, re.IGNORECASE):
+            code = self._strip_comments(line)
+            if 'contract-caller' not in code or 'is-eq' not in code:
+                continue
+
+            flagged = False
+            for pattern in comparison_patterns:
+                match = re.search(pattern, code, re.IGNORECASE)
+                if not match:
+                    continue
+                compared_expr = match.group(1).strip().lower()
+                if re.match(r"^'s[0-9a-z]+\.[a-z0-9-]+$", compared_expr) or re.match(r"^\.[a-z0-9-]+$", compared_expr):
+                    # Explicit allowlist of a contract principal is a common and often valid pattern.
+                    continue
+                if re.search(r'(admin|owner|govern|operator|authority|auth)', compared_expr):
+                    flagged = True
+                    break
+
+            if flagged:
                 self.add_finding(
                     Severity.CRITICAL,
                     "Authorization Bypass Risk: contract-caller in Access Control",
@@ -158,63 +218,63 @@ class ClarityScanner:
     
     def check_public_function_auth(self):
         """Check if public functions have authorization checks"""
-        in_public_function = False
-        func_name = ""
-        func_start_line = 0
-        func_lines = []
-        
-        for i, line in enumerate(self.lines, 1):
-            # Detect public function start
-            public_match = re.search(r'\(define-public\s+\(([^\s)]+)', line)
-            if public_match:
-                in_public_function = True
-                func_name = public_match.group(1)
-                func_start_line = i
-                func_lines = [line]
+        sensitive_name_keywords = [
+            'admin', 'owner', 'govern', 'protocol', 'set-', 'update',
+            'upgrade', 'pause', 'configure', 'mint', 'burn'
+        ]
+        state_change_keywords = [
+            'map-set', 'map-insert', 'map-delete', 'var-set',
+            'ft-mint?', 'ft-burn?', 'nft-mint?', 'nft-burn?', 'stx-transfer?',
+            'as-contract'
+        ]
+        auth_indicators = [
+            'tx-sender', 'contract-caller', 'is-admin', 'is-owner',
+            'is-protocol-caller', 'is-lending-pool', 'only-owner',
+            'var-get admin', 'var-get owner', 'var-get contract-owner'
+        ]
+
+        for func_name, func_start_line, _, func_lines in self._iter_function_blocks('public'):
+            func_name_lower = func_name.lower()
+            func_body = '\n'.join(func_lines)
+            func_body_lower = func_body.lower()
+
+            if not any(keyword in func_name_lower for keyword in sensitive_name_keywords):
                 continue
-            
-            if in_public_function:
-                func_lines.append(line)
-                
-                # Check for closing parenthesis at function level
-                if line.strip().startswith(')') and len(func_lines) > 3:
-                    # Analyze complete function
-                    func_body = '\n'.join(func_lines)
-                    
-                    # Skip if function name suggests it's meant to be public
-                    skip_names = ['transfer', 'mint', 'burn', 'deposit', 'withdraw']
-                    if any(name in func_name.lower() for name in skip_names):
-                        # Check if has ANY authorization
-                        has_auth = any(keyword in func_body for keyword in [
-                            'tx-sender', 'asserts!', 'is-eq', 'owner', 'admin'
-                        ])
-                        
-                        if not has_auth:
-                            self.add_finding(
-                                Severity.HIGH,
-                                f"Missing Authorization Check in Public Function '{func_name}'",
-                                f"The public function '{func_name}' performs state changes but "
-                                "lacks authorization checks. Any caller can execute this function.",
-                                func_start_line,
-                                func_lines[0],
-                                "Add authorization checks using 'tx-sender' validation: "
-                                "(asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)",
-                                "Access Control"
-                            )
-                    
-                    in_public_function = False
-                    func_lines = []
+
+            has_state_change = any(keyword in func_body_lower for keyword in state_change_keywords)
+            if not has_state_change:
+                continue
+
+            has_auth = any(indicator in func_body_lower for indicator in auth_indicators)
+            if not has_auth and re.search(r'asserts!\s*\(\s*is-[a-z0-9-]+', func_body_lower):
+                has_auth = True
+            if not has_auth:
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Missing Authorization Check in Public Function '{func_name}'",
+                    f"The public function '{func_name}' appears to perform privileged state "
+                    "changes but lacks obvious caller authorization checks.",
+                    func_start_line,
+                    func_lines[0],
+                    "Add authorization checks using 'tx-sender' or a vetted role guard, for "
+                    "example: (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)",
+                    "Access Control"
+                )
     
     def check_data_map_validation(self):
         """Check for unsafe data map access"""
         for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+
             # Check map-set without validation
-            if 'map-set' in line:
-                context_start = max(0, i-5)
+            if 'map-set' in code:
+                context_start = max(0, i-12)
                 context = '\n'.join(self.lines[context_start:i])
+                context_lower = context.lower()
                 
-                has_validation = any(keyword in context for keyword in [
-                    'asserts!', 'is-eq', 'map-get?', 'default-to'
+                has_validation = any(keyword in context_lower for keyword in [
+                    'asserts!', 'is-eq', 'map-get?', 'default-to',
+                    'match', 'if ', 'try!', 'unwrap!', 'is-none', 'is-some'
                 ])
                 
                 if not has_validation:
@@ -231,11 +291,15 @@ class ClarityScanner:
                     )
             
             # Check map-get? without default-to
-            if re.search(r'map-get\?\s+\w+', line):
-                context_end = min(len(self.lines), i+2)
+            if re.search(r'map-get\?\s+\w+', code):
+                context_end = min(len(self.lines), i+4)
                 context = '\n'.join(self.lines[i-1:context_end])
+                context_lower = context.lower()
                 
-                has_default = 'default-to' in context or 'match' in context
+                has_default = any(keyword in context_lower for keyword in [
+                    'default-to', 'match', 'unwrap!', 'unwrap-panic',
+                    'try!', 'asserts!', 'is-none', 'is-some'
+                ])
                 
                 if not has_default:
                     self.add_finding(
@@ -269,23 +333,37 @@ class ClarityScanner:
     
     def check_response_handling(self):
         """Check for proper response type handling in function calls"""
-        for i, line in enumerate(self.lines, 1):
-            # Check contract-call? usage
-            if 'contract-call?' in line:
-                context_end = min(len(self.lines), i+3)
-                context = '\n'.join(self.lines[i-1:context_end])
-                
-                has_response_handling = any(keyword in context for keyword in [
-                    'try!', 'match', 'unwrap!', 'is-ok', 'is-err'
+        function_blocks = list(self._iter_function_blocks('public')) + list(self._iter_function_blocks('private'))
+
+        for _, func_start, _, func_lines in function_blocks:
+            for offset, line in enumerate(func_lines):
+                line_num = func_start + offset
+                code = self._strip_comments(line)
+                if 'contract-call?' not in code:
+                    continue
+                if 'define-constant' in code:
+                    continue
+
+                stripped = code.strip()
+
+                # Returning a contract call directly is common and not inherently unsafe.
+                if stripped.startswith('(contract-call?'):
+                    continue
+
+                local_window_end = min(len(func_lines), offset + 5)
+                local_context = '\n'.join(func_lines[offset:local_window_end]).lower()
+
+                has_response_handling = any(keyword in local_context for keyword in [
+                    'try!', 'match', 'unwrap!', 'unwrap-panic', 'is-ok', 'is-err', 'default-to'
                 ])
-                
+
                 if not has_response_handling:
                     self.add_finding(
                         Severity.MEDIUM,
                         "Unhandled Response from Contract Call",
                         "Contract calls return response types that must be handled. "
                         "Ignoring response can lead to silent failures.",
-                        i,
+                        line_num,
                         line,
                         "Handle the response using 'try!' to propagate errors or 'match' "
                         "to handle success/failure explicitly.",
@@ -320,9 +398,13 @@ class ClarityScanner:
     def check_stx_transfer_safety(self):
         """Check for STX transfers that could drain contract balance"""
         for i, line in enumerate(self.lines, 1):
-            if 'stx-transfer?' in line and 'as-contract' in line:
+            code = self._strip_comments(line)
+            if 'stx-transfer?' in code and 'as-contract' in code:
+                # Heuristic: focus on generic amount-driven transfers; skip derived payout variables.
+                if not re.search(r'\b(amount|amt|value)\b', code, re.IGNORECASE):
+                    continue
                 # Contract is sending its own STX — high risk
-                func_context_start = max(0, i - 15)
+                func_context_start = max(0, i - 20)
                 context = '\n'.join(self.lines[func_context_start:i])
                 has_limit = any(k in context for k in ['asserts!', '<=', '<', 'min'])
                 if not has_limit:
@@ -361,40 +443,28 @@ class ClarityScanner:
 
     def check_read_only_side_effects(self):
         """Check that read-only functions don't attempt state changes"""
-        in_readonly = False
-        func_start = 0
-        func_lines_buf = []
-        
-        for i, line in enumerate(self.lines, 1):
-            ro_match = re.search(r'\(define-read-only\s+\(([^\s)]+)', line)
-            if ro_match:
-                in_readonly = True
-                func_start = i
-                func_lines_buf = [line]
-                continue
-            if in_readonly:
-                func_lines_buf.append(line)
-                state_changers = ['map-set', 'map-delete', 'map-insert',
-                                  'var-set', 'stx-transfer?', 'ft-transfer?',
-                                  'nft-transfer?', 'ft-mint?', 'nft-mint?',
-                                  'ft-burn?', 'nft-burn?']
+        state_changers = ['map-set', 'map-delete', 'map-insert',
+                          'var-set', 'stx-transfer?', 'ft-transfer?',
+                          'nft-transfer?', 'ft-mint?', 'nft-mint?',
+                          'ft-burn?', 'nft-burn?']
+
+        for _, func_start, _, func_lines in self._iter_function_blocks('read-only'):
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
                 for sc in state_changers:
-                    if sc in line:
+                    if sc in code:
                         self.add_finding(
                             Severity.HIGH,
                             "State-Changing Call in Read-Only Function",
                             f"A read-only function contains '{sc}' which attempts state "
                             "mutation. While Clarity will reject this at deployment, it "
                             "indicates a logic error in the contract design.",
-                            i,
+                            func_start + offset,
                             line,
                             "Move state-changing logic to a public function, or remove "
                             "the mutation from the read-only function.",
                             "Logic Error"
                         )
-                # rough end detection
-                if line.strip() == ')' and len(func_lines_buf) > 2:
-                    in_readonly = False
 
     def check_trait_implementation_safety(self):
         """Detect trait usage without proper validation"""

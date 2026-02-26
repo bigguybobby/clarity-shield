@@ -266,6 +266,46 @@ Run against test contracts:
 ./clarity-shield scan test-contracts/ --recursive
 ```
 
+## 🌍 Real-World Testing
+
+On **February 26, 2026**, Clarity Shield was run against **10 real contracts** in `test-contracts/real/` sourced from active Stacks ecosystem repos:
+
+- `stacks-sbtc/sbtc`
+- `citycoins/contracts`
+- `Zest-Protocol/zest-contracts`
+- `BitflowFinance/bitflow`
+- `alexgo-io/alex-v1`
+
+Source paths and pinned upstream commit hashes are documented in `test-contracts/real/SOURCES.md`.
+
+### Run Command
+
+```bash
+./clarity-shield scan test-contracts/real/ --recursive --format json
+```
+
+### Results Summary
+
+| Contract | Findings | Critical | High | Medium | Low | Info |
+|----------|----------|----------|------|--------|-----|------|
+| `alex__exchange` | 2 | 0 | 1 | 0 | 1 | 0 |
+| `bitflow__router-xyk-alex-v-1-3` | 24 | 0 | 9 | 0 | 0 | 15 |
+| `bitflow__stableswap` | 18 | 0 | 0 | 13 | 4 | 1 |
+| `citycoins__miamicoin-core-v2` | 51 | 0 | 0 | 12 | 25 | 14 |
+| `citycoins__newyorkcitycoin-core-v2` | 51 | 0 | 0 | 12 | 25 | 14 |
+| `stacks-sbtc__sbtc-deposit` | 2 | 0 | 0 | 2 | 0 | 0 |
+| `stacks-sbtc__sbtc-token` | 1 | 0 | 0 | 1 | 0 | 0 |
+| `stacks-sbtc__sbtc-withdrawal` | 3 | 0 | 1 | 1 | 1 | 0 |
+| `zest__liquidation-manager` | 21 | 0 | 6 | 14 | 1 | 0 |
+| `zest__pool-borrow` | 10 | 0 | 3 | 6 | 1 | 0 |
+| **Total** | **183** | **0** | **20** | **61** | **58** | **44** |
+
+### Notes
+
+- Initial pass on this same corpus surfaced **302 findings** with **2 criticals**.
+- After detector tuning for real-world patterns (balanced function parsing + false-positive reduction), results dropped to **183 findings** and **0 criticals**.
+- Most remaining findings are advisory patterns (`unwrap-panic`, `map-get?` optional handling, hardcoded principals, and block-height assumptions), which still warrant manual review in production audits.
+
 ## 📖 Documentation
 
 - [Clarity Language Book](https://book.clarity-lang.org/)
