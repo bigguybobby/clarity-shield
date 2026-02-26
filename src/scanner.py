@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 from typing import List, Dict, Optional
 from pathlib import Path
 from enum import Enum
+from datetime import datetime
 
 
 class Severity(Enum):
@@ -60,6 +61,11 @@ class ClarityScanner:
         self.check_data_map_validation()
         self.check_hardcoded_principals()
         self.check_response_handling()
+        self.check_missing_post_conditions()
+        self.check_stx_transfer_safety()
+        self.check_block_height_dependency()
+        self.check_read_only_side_effects()
+        self.check_trait_implementation_safety()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -287,6 +293,128 @@ class ClarityScanner:
                     )
 
 
+    def check_missing_post_conditions(self):
+        """Detect STX/token transfers without post-condition annotations"""
+        transfer_fns = ['stx-transfer?', 'ft-transfer?', 'nft-transfer?']
+        for i, line in enumerate(self.lines, 1):
+            for fn in transfer_fns:
+                if fn in line:
+                    # Check if any post-condition comment/annotation nearby
+                    context_start = max(0, i - 10)
+                    context = '\n'.join(self.lines[context_start:i])
+                    if 'post-condition' not in context.lower():
+                        self.add_finding(
+                            Severity.MEDIUM,
+                            f"Transfer Without Post-Condition Documentation ({fn})",
+                            f"The function uses '{fn}' but has no documented post-conditions. "
+                            "Stacks transactions can include post-conditions to limit token "
+                            "movement. Without clear documentation, wallets may reject the "
+                            "transaction or users may not set protective post-conditions.",
+                            i,
+                            line,
+                            "Document expected post-conditions in comments. Consider adding "
+                            "a ;; @post-condition annotation so wallets/frontends can enforce limits.",
+                            "Post-Conditions"
+                        )
+
+    def check_stx_transfer_safety(self):
+        """Check for STX transfers that could drain contract balance"""
+        for i, line in enumerate(self.lines, 1):
+            if 'stx-transfer?' in line and 'as-contract' in line:
+                # Contract is sending its own STX — high risk
+                func_context_start = max(0, i - 15)
+                context = '\n'.join(self.lines[func_context_start:i])
+                has_limit = any(k in context for k in ['asserts!', '<=', '<', 'min'])
+                if not has_limit:
+                    self.add_finding(
+                        Severity.HIGH,
+                        "Unbounded STX Transfer from Contract",
+                        "The contract transfers STX using 'as-contract' without apparent "
+                        "amount validation. An attacker who can control the amount parameter "
+                        "could drain the contract's entire STX balance.",
+                        i,
+                        line,
+                        "Add maximum transfer limits and validate amounts: "
+                        "(asserts! (<= amount (var-get max-withdrawal)) ERR_AMOUNT_TOO_HIGH)",
+                        "Fund Safety"
+                    )
+
+    def check_block_height_dependency(self):
+        """Detect unsafe reliance on block-height for time-critical logic"""
+        for i, line in enumerate(self.lines, 1):
+            if 'block-height' in line:
+                context_end = min(len(self.lines), i + 3)
+                context = '\n'.join(self.lines[i-1:context_end])
+                if any(k in context for k in ['unlock', 'deadline', 'expir', 'lock', 'vest']):
+                    self.add_finding(
+                        Severity.LOW,
+                        "Block-Height Used for Time-Sensitive Logic",
+                        "Block-height is used near time-sensitive logic (locking/unlocking). "
+                        "Stacks block times are variable (especially post-Nakamoto), so "
+                        "block-height is an unreliable time proxy.",
+                        i,
+                        line,
+                        "Consider using tenure-height or documenting the expected block time "
+                        "assumptions. Alert users that timing may vary.",
+                        "Timing"
+                    )
+
+    def check_read_only_side_effects(self):
+        """Check that read-only functions don't attempt state changes"""
+        in_readonly = False
+        func_start = 0
+        func_lines_buf = []
+        
+        for i, line in enumerate(self.lines, 1):
+            ro_match = re.search(r'\(define-read-only\s+\(([^\s)]+)', line)
+            if ro_match:
+                in_readonly = True
+                func_start = i
+                func_lines_buf = [line]
+                continue
+            if in_readonly:
+                func_lines_buf.append(line)
+                state_changers = ['map-set', 'map-delete', 'map-insert',
+                                  'var-set', 'stx-transfer?', 'ft-transfer?',
+                                  'nft-transfer?', 'ft-mint?', 'nft-mint?',
+                                  'ft-burn?', 'nft-burn?']
+                for sc in state_changers:
+                    if sc in line:
+                        self.add_finding(
+                            Severity.HIGH,
+                            "State-Changing Call in Read-Only Function",
+                            f"A read-only function contains '{sc}' which attempts state "
+                            "mutation. While Clarity will reject this at deployment, it "
+                            "indicates a logic error in the contract design.",
+                            i,
+                            line,
+                            "Move state-changing logic to a public function, or remove "
+                            "the mutation from the read-only function.",
+                            "Logic Error"
+                        )
+                # rough end detection
+                if line.strip() == ')' and len(func_lines_buf) > 2:
+                    in_readonly = False
+
+    def check_trait_implementation_safety(self):
+        """Detect trait usage without proper validation"""
+        for i, line in enumerate(self.lines, 1):
+            # Detect dynamic dispatch via trait references in function params
+            if re.search(r'<[A-Za-z-]+>', line) and 'define-public' in line:
+                self.add_finding(
+                    Severity.MEDIUM,
+                    "Dynamic Dispatch via Trait Parameter",
+                    "Function accepts a trait reference as parameter, enabling dynamic "
+                    "dispatch. A caller can pass any contract implementing the trait, "
+                    "potentially one with malicious side effects.",
+                    i,
+                    line,
+                    "Validate the trait implementor against an allowlist of known-good "
+                    "contracts, or use 'contract-call?' with static contract references.",
+                    "Trait Safety"
+                )
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -294,7 +422,7 @@ def generate_report(findings: List[Finding], contract_name: str,
     if output_format == 'json':
         report = {
             "contract": contract_name,
-            "scan_date": "2026-02-25",
+            "scan_date": datetime.now().strftime("%Y-%m-%d"),
             "total_findings": len(findings),
             "severity_breakdown": {
                 "CRITICAL": len([f for f in findings if f.severity == "CRITICAL"]),
@@ -319,7 +447,7 @@ def generate_report(findings: List[Finding], contract_name: str,
         report = f"""# 🛡️ Clarity Shield Security Report
 
 **Contract:** `{contract_name}`  
-**Scan Date:** 2026-02-25  
+**Scan Date:** {datetime.now().strftime("%Y-%m-%d")}  
 **Total Findings:** {len(findings)}
 
 ## Severity Breakdown

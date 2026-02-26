@@ -20,7 +20,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
 
 ## ✨ Features
 
-- 🔍 **7+ Vulnerability Detectors**:
+- 🔍 **12 Vulnerability Detectors**:
   - Authorization bypass via `contract-caller` misuse
   - Missing access control checks on public functions
   - Unsafe `unwrap!` / `unwrap-panic` usage (DoS vectors)
@@ -28,6 +28,11 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
   - Data map validation issues
   - Unhandled response types from contract calls
   - Hardcoded principals (centralization risks)
+  - Missing post-condition documentation on transfers
+  - Unbounded STX transfers from contract balance (fund drain)
+  - Block-height dependency in time-sensitive logic
+  - State-changing calls in read-only functions
+  - Dynamic dispatch via unsafe trait parameters
 
 - 📊 **Multiple Output Formats**: JSON and Markdown reports with severity ratings
 - 🚀 **CI/CD Integration**: GitHub Actions workflow included

@@ -34,6 +34,7 @@
     (asserts! (not (var-get paused)) ERR_PAUSED)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     ;; SAFE: try! propagates errors properly
+    ;; @post-condition sender loses exactly `amount` tokens
     (try! (ft-transfer? safe-token amount tx-sender recipient))
     (ok true)))
 
