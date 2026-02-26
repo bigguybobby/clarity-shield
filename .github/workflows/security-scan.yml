@@ -1,0 +1,77 @@
+name: Clarity Security Scan
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Make scanner executable
+        run: chmod +x clarity-shield
+
+      - name: Run Clarity Shield (Markdown)
+        id: scan
+        run: |
+          ./clarity-shield scan test-contracts/ --recursive --format markdown
+          echo "scan_status=$?" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Run Clarity Shield (SARIF)
+        run: |
+          ./clarity-shield scan test-contracts/ --recursive --format sarif
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: findings/clarity-shield.sarif
+        continue-on-error: true
+
+      - name: Upload Markdown Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: findings/
+
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reports = fs.readdirSync('findings')
+              .filter(f => f.endsWith('.md'))
+              .map(f => fs.readFileSync(`findings/${f}`, 'utf8'))
+              .join('\n\n---\n\n');
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🛡️ Clarity Shield Security Report\n\n${reports}`
+            });
+
+      - name: Fail if critical issues found
+        if: steps.scan.outputs.scan_status == '2'
+        run: |
+          echo "❌ Critical security issues detected!"
+          exit 1

@@ -12,7 +12,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from scanner import ClarityScanner, generate_report
+from scanner import ClarityScanner, generate_report, generate_sarif
 
 
 def main():
@@ -31,12 +31,14 @@ Examples:
     
     parser.add_argument('action', choices=['scan'], help='Action to perform')
     parser.add_argument('path', help='Contract file or directory to scan')
-    parser.add_argument('--format', choices=['json', 'markdown'], default='markdown',
+    parser.add_argument('--format', choices=['json', 'markdown', 'sarif'], default='markdown',
                        help='Output format (default: markdown)')
     parser.add_argument('--output', '-o', help='Output file path')
     parser.add_argument('--recursive', '-r', action='store_true',
                        help='Recursively scan directory')
-    parser.add_argument('--version', '-v', action='version', version='Clarity Shield 1.0.0')
+    parser.add_argument('--severity', '-s', choices=['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'],
+                       default=None, help='Minimum severity to report')
+    parser.add_argument('--version', '-v', action='version', version='Clarity Shield 1.1.0')
     
     args = parser.parse_args()
     
@@ -64,10 +66,14 @@ Examples:
             print(f"❌ No .clar files found in '{args.path}'")
             sys.exit(1)
     
-    print(f"🛡️  Clarity Shield v1.0.0")
+    print(f"🛡️  Clarity Shield v1.1.0")
     print(f"📂 Found {len(contracts)} contract(s) to scan\n")
     
+    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    min_idx = severity_order.index(args.severity) if args.severity else len(severity_order) - 1
+
     all_findings = []
+    all_findings_by_name = {}
     critical_count = 0
     high_count = 0
     
@@ -75,28 +81,40 @@ Examples:
         print(f"{'='*60}")
         scanner = ClarityScanner(str(contract_path))
         findings = scanner.scan()
+        findings = [f for f in findings if severity_order.index(f.severity) <= min_idx]
         all_findings.extend(findings)
+        all_findings_by_name[scanner.contract_name] = findings
         
         # Count severity
         critical_count += len([f for f in findings if f.severity == "CRITICAL"])
         high_count += len([f for f in findings if f.severity == "HIGH"])
         
-        # Generate individual report
-        report = generate_report(findings, scanner.contract_name, args.format)
-        
-        # Save report
-        if args.output:
-            output_path = Path(args.output)
-        else:
-            ext = 'json' if args.format == 'json' else 'md'
-            output_dir = Path('findings')
-            output_dir.mkdir(exist_ok=True)
-            output_path = output_dir / f"{scanner.contract_name}_report.{ext}"
-        
+        if args.format != 'sarif':
+            # Generate individual report
+            report = generate_report(findings, scanner.contract_name, args.format)
+            
+            # Save report
+            if args.output:
+                output_path = Path(args.output)
+            else:
+                ext = 'json' if args.format == 'json' else 'md'
+                output_dir = Path('findings')
+                output_dir.mkdir(exist_ok=True)
+                output_path = output_dir / f"{scanner.contract_name}_report.{ext}"
+            
+            with open(output_path, 'w') as f:
+                f.write(report)
+            
+            print(f"📄 Report: {output_path}\n")
+    
+    if args.format == 'sarif':
+        sarif_output = generate_sarif(all_findings_by_name)
+        output_dir = Path('findings')
+        output_dir.mkdir(exist_ok=True)
+        output_path = output_dir / "clarity-shield.sarif"
         with open(output_path, 'w') as f:
-            f.write(report)
-        
-        print(f"📄 Report: {output_path}\n")
+            f.write(sarif_output)
+        print(f"\n📄 SARIF report: {output_path}")
     
     # Summary
     print(f"{'='*60}")

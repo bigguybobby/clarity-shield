@@ -66,6 +66,9 @@ class ClarityScanner:
         self.check_block_height_dependency()
         self.check_read_only_side_effects()
         self.check_trait_implementation_safety()
+        self.check_reentrancy_patterns()
+        self.check_magic_numbers()
+        self.check_principal_injection()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -466,6 +469,85 @@ class ClarityScanner:
                             "Logic Error"
                         )
 
+    def check_reentrancy_patterns(self):
+        """Detect state changes after external contract calls (reentrancy-like patterns)"""
+        state_changers = {'map-set', 'map-delete', 'map-insert', 'var-set'}
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            saw_external_call = False
+            external_call_line = 0
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if 'contract-call?' in code:
+                    saw_external_call = True
+                    external_call_line = func_start + offset
+                if saw_external_call:
+                    for sc in state_changers:
+                        if sc in code:
+                            self.add_finding(
+                                Severity.HIGH,
+                                f"State Change After External Call in '{func_name}' (Reentrancy Pattern)",
+                                f"'{sc}' occurs after 'contract-call?' (line {external_call_line}). "
+                                "While Clarity prevents traditional reentrancy, state changes after "
+                                "external calls can lead to inconsistent state if the call fails "
+                                "or if future Clarity versions relax call restrictions.",
+                                func_start + offset,
+                                line,
+                                "Follow checks-effects-interactions: perform state changes BEFORE "
+                                "external calls, not after.",
+                                "Reentrancy"
+                            )
+                            break
+
+    def check_magic_numbers(self):
+        """Detect raw numeric literals that should be named constants"""
+        # Only flag large/unusual numbers, not common ones like u0, u1, u100
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if 'define-constant' in code or code.strip().startswith(';;'):
+                continue
+            matches = re.findall(r'\bu(\d+)\b', code)
+            for m in matches:
+                val = int(m)
+                if val > 1000 and val != 1000000:  # skip trivially common values
+                    self.add_finding(
+                        Severity.INFO,
+                        f"Magic Number u{m} — Consider Named Constant",
+                        f"The literal u{m} appears inline. Magic numbers reduce readability "
+                        "and make audits harder.",
+                        i,
+                        line,
+                        f"Define a named constant: (define-constant MEANINGFUL_NAME u{m})",
+                        "Code Quality"
+                    )
+
+    def check_principal_injection(self):
+        """Detect functions that accept principal params and use them in privileged ops"""
+        privileged_ops = ['stx-transfer?', 'ft-mint?', 'nft-mint?', 'ft-transfer?', 'nft-transfer?']
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            header = func_lines[0] if func_lines else ''
+            if 'principal' not in header:
+                continue
+            func_body = '\n'.join(func_lines)
+            for op in privileged_ops:
+                if op in func_body:
+                    # Check if there's validation of the principal param
+                    if not any(k in func_body for k in ['is-eq', 'asserts!', 'contract-caller', 'tx-sender']):
+                        self.add_finding(
+                            Severity.HIGH,
+                            f"Unvalidated Principal in Privileged Operation '{func_name}'",
+                            f"Function accepts a principal parameter and uses it in '{op}' "
+                            "without validating the principal. An attacker could pass an "
+                            "arbitrary address to redirect funds or mint tokens.",
+                            func_start,
+                            header,
+                            "Validate principal parameters against tx-sender or an allowlist "
+                            "before using them in privileged operations.",
+                            "Input Validation"
+                        )
+                    break
+
     def check_trait_implementation_safety(self):
         """Detect trait usage without proper validation"""
         for i, line in enumerate(self.lines, 1):
@@ -567,51 +649,150 @@ def generate_report(findings: List[Finding], contract_name: str,
         return report
 
 
+def generate_sarif(all_findings: dict, tool_version: str = "1.0.0") -> str:
+    """Generate SARIF 2.1.0 output for CI/CD integration (GitHub Code Scanning)"""
+    rules = {}
+    results = []
+
+    for contract_name, findings in all_findings.items():
+        for f in findings:
+            rule_id = f.category.lower().replace(" ", "-") + "." + f.title.lower()[:40].replace(" ", "-")
+            if rule_id not in rules:
+                rules[rule_id] = {
+                    "id": rule_id,
+                    "name": f.title[:60],
+                    "shortDescription": {"text": f.title},
+                    "fullDescription": {"text": f.description},
+                    "defaultConfiguration": {
+                        "level": {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning",
+                                  "LOW": "note", "INFO": "note"}.get(f.severity, "warning")
+                    },
+                    "helpUri": "https://github.com/clarity-shield/clarity-shield"
+                }
+            results.append({
+                "ruleId": rule_id,
+                "level": {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning",
+                          "LOW": "note", "INFO": "note"}.get(f.severity, "warning"),
+                "message": {"text": f"{f.description}\n\nRecommendation: {f.recommendation}"},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": contract_name + ".clar"},
+                        "region": {"startLine": f.line}
+                    }
+                }]
+            })
+
+    sarif = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "Clarity Shield",
+                    "version": tool_version,
+                    "informationUri": "https://github.com/clarity-shield/clarity-shield",
+                    "rules": list(rules.values())
+                }
+            },
+            "results": results
+        }]
+    }
+    return json.dumps(sarif, indent=2)
+
+
+def collect_contracts(path: Path, recursive: bool = False) -> List[Path]:
+    """Collect .clar files from a path (file or directory)"""
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        pattern = "**/*.clar" if recursive else "*.clar"
+        return sorted(path.glob(pattern))
+    return []
+
+
 def main():
     """CLI entry point"""
-    if len(sys.argv) < 2:
-        print("Usage: python scanner.py <contract.clar> [--format json|markdown]")
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="clarity-shield",
+        description="🛡️  Clarity Shield — Smart Contract Security Scanner for Stacks"
+    )
+    parser.add_argument("target", help="Clarity contract file or directory to scan")
+    parser.add_argument("--format", "-f", choices=["json", "markdown", "sarif"],
+                        default="markdown", help="Output format (default: markdown)")
+    parser.add_argument("--recursive", "-r", action="store_true",
+                        help="Recursively scan subdirectories")
+    parser.add_argument("--no-save", action="store_true",
+                        help="Print report to stdout instead of saving files")
+    parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
+                        default=None, help="Minimum severity to report")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.1.0")
+
+    args = parser.parse_args()
+
+    target = Path(args.target)
+    if not target.exists():
+        print(f"Error: '{args.target}' not found")
         sys.exit(1)
-    
-    contract_path = sys.argv[1]
-    output_format = 'markdown'
-    
-    if '--format' in sys.argv:
-        idx = sys.argv.index('--format')
-        if idx + 1 < len(sys.argv):
-            output_format = sys.argv[idx + 1]
-    
-    if not Path(contract_path).exists():
-        print(f"Error: Contract file '{contract_path}' not found")
+
+    contracts = collect_contracts(target, args.recursive)
+    if not contracts:
+        print(f"Error: No .clar files found in '{args.target}'")
         sys.exit(1)
-    
-    # Run scan
-    scanner = ClarityScanner(contract_path)
-    findings = scanner.scan()
-    
-    # Generate report
-    report = generate_report(findings, scanner.contract_name, output_format)
-    
-    # Output report
-    output_dir = Path('findings')
-    output_dir.mkdir(exist_ok=True)
-    
-    ext = 'json' if output_format == 'json' else 'md'
-    output_file = output_dir / f"{scanner.contract_name}_report.{ext}"
-    
-    with open(output_file, 'w') as f:
-        f.write(report)
-    
-    print(f"\n[+] Report saved to: {output_file}")
-    print(f"[+] Summary: {len(findings)} findings")
-    
+
+    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    min_idx = severity_order.index(args.severity) if args.severity else len(severity_order) - 1
+
+    all_findings = {}
+    total = 0
+    worst_severity = None
+
+    for contract_path in contracts:
+        scanner = ClarityScanner(str(contract_path))
+        findings = scanner.scan()
+
+        # Filter by severity
+        findings = [f for f in findings if severity_order.index(f.severity) <= min_idx]
+        all_findings[scanner.contract_name] = findings
+        total += len(findings)
+
+        for f in findings:
+            idx = severity_order.index(f.severity)
+            if worst_severity is None or idx < severity_order.index(worst_severity):
+                worst_severity = f.severity
+
+        if args.format != "sarif":
+            report = generate_report(findings, scanner.contract_name, args.format)
+            if args.no_save:
+                print(report)
+            else:
+                output_dir = Path('findings')
+                output_dir.mkdir(exist_ok=True)
+                ext = 'json' if args.format == 'json' else 'md'
+                output_file = output_dir / f"{scanner.contract_name}_report.{ext}"
+                with open(output_file, 'w') as fh:
+                    fh.write(report)
+                print(f"[+] Report saved to: {output_file}")
+
+    if args.format == "sarif":
+        sarif_output = generate_sarif(all_findings)
+        if args.no_save:
+            print(sarif_output)
+        else:
+            output_dir = Path('findings')
+            output_dir.mkdir(exist_ok=True)
+            output_file = output_dir / "clarity-shield.sarif"
+            with open(output_file, 'w') as fh:
+                fh.write(sarif_output)
+            print(f"\n[+] SARIF report saved to: {output_file}")
+
+    print(f"\n[+] Total: {total} findings across {len(contracts)} contract(s)")
+
     # Exit code based on severity
-    has_critical = any(f.severity == "CRITICAL" for f in findings)
-    has_high = any(f.severity == "HIGH" for f in findings)
-    
-    if has_critical:
+    if worst_severity == "CRITICAL":
         sys.exit(2)
-    elif has_high:
+    elif worst_severity == "HIGH":
         sys.exit(1)
     else:
         sys.exit(0)
