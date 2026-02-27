@@ -20,7 +20,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
 
 ## ✨ Features
 
-- 🔍 **15 Vulnerability Detectors**:
+- 🔍 **31 Vulnerability Detectors**:
   - Authorization bypass via `contract-caller` misuse
   - Missing access control checks on public functions
   - Unsafe `unwrap!` / `unwrap-panic` usage (DoS vectors)
@@ -33,6 +33,10 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
   - Block-height dependency in time-sensitive logic
   - State-changing calls in read-only functions
   - Dynamic dispatch via unsafe trait parameters
+
+  - Unprotected mint functions (unlimited inflation) — CRITICAL
+  - Unvalidated price oracle usage (manipulation risk) — HIGH  
+  - Bypassable time-lock setters (withdrawal bypass) — HIGH
 
 - 📊 **Multiple Output Formats**: JSON and Markdown reports with severity ratings
 - 🚀 **CI/CD Integration**: GitHub Actions workflow included
@@ -50,7 +54,12 @@ cd clarity-shield
 chmod +x clarity-shield
 ```
 
-**Requirements**: Python 3.8+
+**Requirements**: Python 3.8+ (zero dependencies)
+
+```bash
+# Or install via pip
+pip install -e .
+```
 
 ### Basic Usage
 

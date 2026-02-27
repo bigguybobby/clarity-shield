@@ -82,6 +82,9 @@ class ClarityScanner:
         self.check_map_delete_without_check()
         self.check_stx_balance_dependency()
         self.check_missing_error_constants()
+        self.check_unprotected_mint()
+        self.check_price_oracle_manipulation()
+        self.check_time_lock_bypass()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -1038,6 +1041,61 @@ class ClarityScanner:
                 "and use them throughout the contract.",
                 "Code Quality"
             )
+
+    def check_unprotected_mint(self):
+        """Detect mint functions without authorization checks"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if re.search(r'\(define-public\s+\((mint|ft-mint|nft-mint)', code):
+                # Look ahead for auth check
+                context = ' '.join(self._strip_comments(l) for l in self.lines[i-1:min(i+15, len(self.lines))])
+                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender)', context):
+                    self.add_finding(
+                        Severity.CRITICAL,
+                        'Unprotected Mint Function',
+                        'A public mint function lacks authorization checks. Anyone can call '
+                        'this function to mint tokens, potentially causing unlimited inflation.',
+                        i, line,
+                        'Add authorization: (asserts! (is-eq contract-caller CONTRACT-OWNER) ERR_UNAUTHORIZED)',
+                        'Access Control'
+                    )
+
+    def check_price_oracle_manipulation(self):
+        """Detect reliance on single price sources without validation"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if re.search(r'(get-price|oracle-price|price-feed|get-stx-price)', code):
+                context_start = max(0, i - 3)
+                context_end = min(len(self.lines), i + 3)
+                context = ' '.join(self._strip_comments(l) for l in self.lines[context_start:context_end])
+                if not re.search(r'(asserts?!|>|<|>=|<=).*price', context, re.IGNORECASE):
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Unvalidated Price Oracle Usage',
+                        'Price data from an oracle is used without bounds checking or staleness '
+                        'validation. An attacker who controls or manipulates the oracle can exploit '
+                        'price-dependent logic.',
+                        i, line,
+                        'Add price bounds validation and check oracle freshness timestamps.',
+                        'Oracle Security'
+                    )
+
+    def check_time_lock_bypass(self):
+        """Detect time-lock mechanisms that can be bypassed"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if re.search(r'\(define-public\s+\((set-.*(?:unlock|lock|time|cooldown))', code):
+                self.add_finding(
+                    Severity.HIGH,
+                    'Potentially Bypassable Time-Lock Setter',
+                    'A public function exists that can modify time-lock parameters. If this '
+                    'function lacks proper authorization, attackers can bypass withdrawal delays.',
+                    i, line,
+                    'Ensure time-lock setter functions have strict authorization and consider '
+                    'making time-lock values immutable or governable by multisig.',
+                    'Temporal Security'
+                )
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -1198,7 +1256,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.4.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.5.0")
 
     args = parser.parse_args()
 
