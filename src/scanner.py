@@ -72,6 +72,11 @@ class ClarityScanner:
         self.check_unbounded_loops()
         self.check_flash_loan_patterns()
         self.check_missing_event_logging()
+        self.check_unsafe_casting()
+        self.check_unprotected_token_uri()
+        self.check_sip010_compliance()
+        self.check_unguarded_as_contract()
+        self.check_excessive_data_var_trust()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -641,6 +646,135 @@ class ClarityScanner:
                 )
 
 
+
+    def check_unsafe_casting(self):
+        """Detect unsafe int/uint conversions that can cause runtime errors"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if 'to-int' in code or 'to-uint' in code:
+                context_start = max(0, i - 5)
+                context = '\n'.join(self.lines[context_start:i])
+                has_guard = any(k in context for k in ['asserts!', '<=', '>=', '<', '>', 'if ', 'match'])
+                if not has_guard:
+                    cast_fn = 'to-int' if 'to-int' in code else 'to-uint'
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        f"Unsafe {cast_fn} Cast Without Range Check",
+                        f"'{cast_fn}' can fail at runtime if the value is out of range. "
+                        "to-int fails for uint values > MAX_INT, to-uint fails for negative ints. "
+                        "This causes a runtime abort, exploitable for DoS.",
+                        i,
+                        line,
+                        f"Add a range check before casting: "
+                        f"(asserts! (<= value u170141183460469231731687303715884105727) ERR_OVERFLOW) "
+                        f"before (to-int value).",
+                        "Type Safety"
+                    )
+
+    def check_unprotected_token_uri(self):
+        """Detect NFT/FT URI setter functions without access control"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_name_lower = func_name.lower()
+            if 'uri' not in func_name_lower and 'metadata' not in func_name_lower:
+                continue
+            func_body = '\n'.join(func_lines)
+            if 'var-set' in func_body:
+                auth_indicators = ['tx-sender', 'contract-caller', 'is-eq', 'asserts!']
+                if not any(k in func_body for k in auth_indicators):
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Unprotected Token URI Setter '{func_name}'",
+                        "Token URI/metadata setter has no access control. An attacker could "
+                        "change NFT metadata to point to malicious content, enabling phishing "
+                        "or rug-pull scenarios where NFT images/data are swapped.",
+                        func_start,
+                        func_lines[0] if func_lines else '',
+                        "Add owner-only access control: "
+                        "(asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)",
+                        "Access Control"
+                    )
+
+    def check_sip010_compliance(self):
+        """Check if FT contracts implement required SIP-010 functions"""
+        if 'ft-mint?' not in self.content and 'define-fungible-token' not in self.content:
+            return
+        required_fns = ['transfer', 'get-name', 'get-symbol', 'get-decimals',
+                       'get-balance', 'get-total-supply', 'get-token-uri']
+        defined_fns = set()
+        for func_name, _, _, _ in self._iter_function_blocks('public'):
+            defined_fns.add(func_name.lower())
+        for func_name, _, _, _ in self._iter_function_blocks('read-only'):
+            defined_fns.add(func_name.lower())
+
+        missing = [fn for fn in required_fns if fn not in defined_fns]
+        if missing:
+            self.add_finding(
+                Severity.MEDIUM,
+                "Incomplete SIP-010 Fungible Token Interface",
+                f"This contract defines a fungible token but is missing SIP-010 required "
+                f"functions: {', '.join(missing)}. Non-compliant tokens may not work with "
+                "wallets, DEXes, and block explorers.",
+                1,
+                self.lines[0] if self.lines else '',
+                f"Implement the missing functions: {', '.join(missing)}. "
+                "See https://github.com/stacksgov/sips/blob/main/sips/sip-010.md",
+                "Standards Compliance"
+            )
+
+    def check_unguarded_as_contract(self):
+        """Detect as-contract usage without proper authorization context"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            if 'as-contract' not in func_body:
+                continue
+            # as-contract elevates to contract principal — needs auth
+            auth_before = False
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if any(k in code for k in ['asserts!', 'is-eq', 'tx-sender', 'contract-caller']):
+                    auth_before = True
+                if 'as-contract' in code and not auth_before:
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Unguarded as-contract Privilege Escalation in '{func_name}'",
+                        "'as-contract' grants the function contract-level privileges "
+                        "(can move the contract's own funds/assets). Without prior "
+                        "authorization checks, any caller can trigger privileged operations.",
+                        func_start + offset,
+                        line,
+                        "Add authorization checks BEFORE the as-contract block: "
+                        "(asserts! (is-eq tx-sender (var-get admin)) ERR_UNAUTHORIZED)",
+                        "Privilege Escalation"
+                    )
+                    break
+
+    def check_excessive_data_var_trust(self):
+        """Detect data-var values used directly in transfer amounts without validation"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            if 'stx-transfer?' not in func_body and 'ft-transfer?' not in func_body:
+                continue
+            # Check if transfer amount comes from var-get without bounds check
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if ('stx-transfer?' in code or 'ft-transfer?' in code) and 'var-get' in code:
+                    local_start = max(0, offset - 8)
+                    local_context = '\n'.join(func_lines[local_start:offset + 1])
+                    if not any(k in local_context for k in ['asserts!', '<=', '<', 'min']):
+                        self.add_finding(
+                            Severity.MEDIUM,
+                            f"Transfer Amount from Data Variable Without Bounds in '{func_name}'",
+                            "Transfer amount is read directly from a data variable. If an admin "
+                            "function can set this variable without bounds checking, it could be "
+                            "used to drain funds (either by a compromised admin or governance attack).",
+                            func_start + offset,
+                            line,
+                            "Add maximum bounds on data variable values when they're set, and "
+                            "validate again before using them in transfers.",
+                            "Fund Safety"
+                        )
+                    break
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -801,7 +935,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.2.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.3.0")
 
     args = parser.parse_args()
 
