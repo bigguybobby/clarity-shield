@@ -32,6 +32,7 @@ class Finding:
     code_snippet: str
     recommendation: str
     category: str
+    confidence: str = "MEDIUM"  # HIGH, MEDIUM, LOW
     
     def to_dict(self):
         return asdict(self)
@@ -52,7 +53,7 @@ class ClarityScanner:
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name}...")
+        print(f"[*] Scanning {self.contract_name} with 35 detectors...")
         
         self.check_tx_sender_vs_contract_caller()
         self.check_unwrap_usage()
@@ -85,6 +86,10 @@ class ClarityScanner:
         self.check_unprotected_mint()
         self.check_price_oracle_manipulation()
         self.check_time_lock_bypass()
+        self.check_unchecked_cross_contract_calls()
+        self.check_redundant_auth_checks()
+        self.check_unprotected_burn()
+        self.check_sip009_compliance()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -1096,6 +1101,124 @@ class ClarityScanner:
                     'Temporal Security'
                 )
 
+    def check_unchecked_cross_contract_calls(self):
+        """Detect contract-call? without proper error handling"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if 'contract-call?' not in code:
+                    continue
+                
+                # Check if wrapped in try!, unwrap!, unwrap-panic, match, or if
+                context_start = max(0, offset - 2)
+                context_end = min(len(func_lines), offset + 3)
+                context = ' '.join(self._strip_comments(l) for l in func_lines[context_start:context_end])
+                
+                if not re.search(r'\b(try!|unwrap!|unwrap-panic|match|\(if\s)', context):
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Unchecked Cross-Contract Call in '{func_name}'",
+                        "contract-call? is used without wrapping the result in try!, unwrap!, "
+                        "unwrap-panic, match, or if. If the external contract call fails or returns "
+                        "an error, this could lead to unexpected behavior or silent failures.",
+                        func_start + offset,
+                        line,
+                        "Wrap contract-call? in (try! ...) to propagate errors, or use (match ...) "
+                        "to handle both success and error cases explicitly.",
+                        "Error Handling"
+                    )
+
+    def check_redundant_auth_checks(self):
+        """Detect functions checking both tx-sender and contract-caller against same variable"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            
+            # Look for patterns where both tx-sender and contract-caller are checked against the same variable
+            tx_sender_checks = re.findall(r'is-eq\s+tx-sender\s+(\S+)', func_body)
+            contract_caller_checks = re.findall(r'is-eq\s+contract-caller\s+(\S+)', func_body)
+            
+            # Also check reverse order
+            tx_sender_checks += re.findall(r'is-eq\s+(\S+)\s+tx-sender', func_body)
+            contract_caller_checks += re.findall(r'is-eq\s+(\S+)\s+contract-caller', func_body)
+            
+            common_vars = set(tx_sender_checks) & set(contract_caller_checks)
+            if common_vars:
+                for offset, line in enumerate(func_lines):
+                    if any(var in line for var in common_vars):
+                        self.add_finding(
+                            Severity.INFO,
+                            f"Redundant Authorization Check in '{func_name}'",
+                            f"Function checks both tx-sender and contract-caller against the same "
+                            f"variable(s): {', '.join(common_vars)}. This is redundant - typically only "
+                            f"one check is needed. tx-sender is the original transaction signer, while "
+                            f"contract-caller is the immediate caller (which could be another contract).",
+                            func_start + offset,
+                            line,
+                            "Choose the appropriate authorization principal: use tx-sender for end-user "
+                            "authorization, or contract-caller for contract-to-contract interactions. "
+                            "Remove the redundant check.",
+                            "Code Quality"
+                        )
+                        break
+
+    def check_unprotected_burn(self):
+        """Detect burn functions without authorization checks"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if re.search(r'\(define-public\s+\((burn|ft-burn|nft-burn)', code):
+                # Look ahead for auth check
+                context = ' '.join(self._strip_comments(l) for l in self.lines[i-1:min(i+15, len(self.lines))])
+                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender)', context):
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Unprotected Burn Function',
+                        'A public burn function lacks authorization checks. Anyone can call '
+                        'this function to burn tokens, potentially destroying user assets without permission.',
+                        i, line,
+                        'Add authorization to verify that only the token owner or an authorized '
+                        'party can burn tokens: (asserts! (is-eq tx-sender token-owner) ERR_UNAUTHORIZED)',
+                        'Access Control'
+                    )
+
+    def check_sip009_compliance(self):
+        """Detect NFT contracts missing required SIP-009 functions"""
+        has_nft = any('nft-mint?' in line or 'define-non-fungible-token' in line 
+                     for line in self.lines)
+        
+        if not has_nft:
+            return
+        
+        required_functions = {
+            'get-last-token-id': False,
+            'get-token-uri': False,
+            'get-owner': False,
+            'transfer': False
+        }
+        
+        # Check which required functions are present
+        for line in self.lines:
+            code = self._strip_comments(line)
+            for func_name in required_functions.keys():
+                if re.search(rf'\(define-(public|read-only)\s+\({func_name}', code):
+                    required_functions[func_name] = True
+        
+        missing = [f for f, present in required_functions.items() if not present]
+        
+        if missing:
+            self.add_finding(
+                Severity.MEDIUM,
+                'Missing SIP-009 NFT Standard Compliance',
+                f"Contract appears to be an NFT contract but is missing required SIP-009 "
+                f"functions: {', '.join(missing)}. SIP-009 compliance is essential for "
+                f"interoperability with NFT marketplaces, wallets, and other ecosystem tools.",
+                1,
+                '(NFT contract)',
+                f"Implement the missing SIP-009 functions: {', '.join(missing)}. "
+                "See https://github.com/stacksgov/sips/blob/main/sips/sip-009/sip-009-nft-standard.md",
+                "Standards Compliance"
+            )
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -1256,7 +1379,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.5.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.6.0")
 
     args = parser.parse_args()
 

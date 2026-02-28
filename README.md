@@ -20,7 +20,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
 
 ## ✨ Features
 
-- 🔍 **31 Vulnerability Detectors**:
+- 🔍 **35 Vulnerability Detectors**:
   - Authorization bypass via `contract-caller` misuse
   - Missing access control checks on public functions
   - Unsafe `unwrap!` / `unwrap-panic` usage (DoS vectors)
@@ -37,6 +37,11 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
   - Unprotected mint functions (unlimited inflation) — CRITICAL
   - Unvalidated price oracle usage (manipulation risk) — HIGH  
   - Bypassable time-lock setters (withdrawal bypass) — HIGH
+
+  - Unchecked cross-contract return values (silent failures) — HIGH
+  - Redundant authorization checks (code quality) — INFO
+  - Unprotected burn functions (asset destruction) — HIGH
+  - Missing SIP-009 NFT standard compliance — MEDIUM
 
 - 📊 **Multiple Output Formats**: JSON and Markdown reports with severity ratings
 - 🚀 **CI/CD Integration**: GitHub Actions workflow included
