@@ -53,7 +53,7 @@ class ClarityScanner:
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name} with 40 detectors...")
+        print(f"[*] Scanning {self.contract_name} with 45 detectors...")
         
         self.check_tx_sender_vs_contract_caller()
         self.check_unwrap_usage()
@@ -95,6 +95,11 @@ class ClarityScanner:
         self.check_denial_of_service_patterns()
         self.check_sandwich_attack_vectors()
         self.check_private_key_material()
+        self.check_unsafe_to_int_to_uint()
+        self.check_unchecked_stx_get_balance()
+        self.check_missing_sender_validation_in_callback()
+        self.check_unbounded_string_input()
+        self.check_governance_centralization()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -1304,6 +1309,127 @@ class ClarityScanner:
             )
 
 
+    def check_unsafe_to_int_to_uint(self):
+        """Detect unchecked to-int/to-uint conversions that may overflow"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(to-uint\s', code):
+                context = '\n'.join(self.lines[max(0,i-2):i+3])
+                if 'if' not in context and 'asserts!' not in context:
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        'Unchecked to-uint Conversion',
+                        'to-uint on a negative int causes unexpected large values. Validate input is non-negative first.',
+                        i + 1, code.strip()[:80],
+                        'Add (asserts! (>= value 0) err-negative) before to-uint conversion.',
+                        'Type Safety'
+                    )
+            if re.search(r'\(to-int\s', code):
+                context = '\n'.join(self.lines[max(0,i-2):i+3])
+                if 'if' not in context and 'asserts!' not in context:
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        'Unchecked to-int Conversion',
+                        'to-int on a uint > MAX_INT causes unexpected negative values.',
+                        i + 1, code.strip()[:80],
+                        'Add bounds check before to-int conversion to prevent overflow.',
+                        'Type Safety'
+                    )
+
+    def check_unchecked_stx_get_balance(self):
+        """Detect reliance on stx-get-balance near transfers"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if 'stx-get-balance' in code:
+                context = '\n'.join(self.lines[max(0,i-1):i+3])
+                if re.search(r'(stx-transfer\?|/|%|\*)', context):
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        'Balance-Dependent Logic with STX Transfer',
+                        'Using stx-get-balance in calculations near stx-transfer can lead to race conditions.',
+                        i + 1, code.strip()[:80],
+                        'Use explicit amount tracking via data-vars instead of live balance queries.',
+                        'Race Condition'
+                    )
+
+    def check_missing_sender_validation_in_callback(self):
+        """Detect public callback functions that don\'t validate the caller"""
+        in_public_fn = False
+        fn_name = ""
+        fn_start = 0
+        fn_lines = []
+        depth = 0
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            match = re.search(r'\(define-public\s+\(([\w-]+)', code)
+            if match:
+                fn_name = match.group(1)
+                if re.search(r'(callback|hook|on-|handle-|notify)', fn_name):
+                    in_public_fn = True
+                    fn_start = i + 1
+                    fn_lines = []
+                    depth = 0
+            if in_public_fn:
+                fn_lines.append(code)
+                depth += code.count('(') - code.count(')')
+                if depth <= 0 and len(fn_lines) > 1:
+                    fn_body = '\n'.join(fn_lines)
+                    if 'contract-caller' not in fn_body and 'tx-sender' not in fn_body:
+                        self.add_finding(
+                            Severity.HIGH,
+                            f'Unvalidated Callback Function: {fn_name}',
+                            'Public callback/hook function does not check the caller identity.',
+                            fn_start, fn_lines[0].strip()[:80],
+                            'Add (asserts! (is-eq contract-caller expected-caller) err-unauthorized).',
+                            'Access Control'
+                        )
+                    in_public_fn = False
+
+    def check_unbounded_string_input(self):
+        """Detect public functions accepting very large string parameters"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            match = re.search(r'\(define-public\s+\([\w-]+.*?(string-(utf8|ascii)\s+(\d+))', code)
+            if match:
+                max_len = int(match.group(3))
+                if max_len > 256:
+                    self.add_finding(
+                        Severity.LOW,
+                        'Large String Parameter in Public Function',
+                        f'Public function accepts string input up to {max_len} chars. Large inputs increase tx cost.',
+                        i + 1, code.strip()[:80],
+                        'Consider limiting string parameters to reasonable bounds (e.g., 256 chars).',
+                        'Gas Optimization'
+                    )
+
+    def check_governance_centralization(self):
+        """Detect single-owner governance patterns without multisig"""
+        has_owner_var = False
+        has_set_owner = False
+        has_multisig = False
+        owner_line = 0
+        owner_snippet = ""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'define-data-var\s+(contract-owner|owner|admin|governance)', code):
+                has_owner_var = True
+                owner_line = i + 1
+                owner_snippet = code.strip()[:80]
+            if re.search(r'var-set\s+(contract-owner|owner|admin)', code):
+                has_set_owner = True
+            if re.search(r'(multisig|multi-sig|threshold|quorum|n-of-m)', code, re.IGNORECASE):
+                has_multisig = True
+        if has_owner_var and has_set_owner and not has_multisig:
+            self.add_finding(
+                Severity.MEDIUM,
+                'Centralized Governance — Single Owner Pattern',
+                'Contract uses a single mutable owner with no multisig or timelock.',
+                owner_line, owner_snippet,
+                'Implement multisig governance or a timelock on ownership transfers.',
+                'Governance'
+            )
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -1515,7 +1641,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.7.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.8.0")
 
     args = parser.parse_args()
 
