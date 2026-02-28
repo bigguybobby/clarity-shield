@@ -53,7 +53,7 @@ class ClarityScanner:
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name} with 35 detectors...")
+        print(f"[*] Scanning {self.contract_name} with 40 detectors...")
         
         self.check_tx_sender_vs_contract_caller()
         self.check_unwrap_usage()
@@ -90,6 +90,11 @@ class ClarityScanner:
         self.check_redundant_auth_checks()
         self.check_unprotected_burn()
         self.check_sip009_compliance()
+        self.check_unsafe_fold_accumulator()
+        self.check_unprotected_contract_init()
+        self.check_denial_of_service_patterns()
+        self.check_sandwich_attack_vectors()
+        self.check_private_key_material()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -1180,6 +1185,86 @@ class ClarityScanner:
                         'Access Control'
                     )
 
+
+    def check_unsafe_fold_accumulator(self):
+        """Detect fold operations where accumulator could overflow or be manipulated"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if '(fold' in code:
+                context = ' '.join(self._strip_comments(l) for l in self.lines[i:min(i+5, len(self.lines))])
+                if any(op in context for op in ['(+ ', '(* ', '(- ']):
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        'Unsafe Fold Accumulator Arithmetic',
+                        'fold operation uses arithmetic on the accumulator without overflow '
+                        'protection. The accumulator could overflow with large lists.',
+                        i + 1, code.strip(),
+                        'Wrap arithmetic in fold callbacks with checked math or add bounds validation.',
+                        'Arithmetic Safety'
+                    )
+
+    def check_unprotected_contract_init(self):
+        """Detect initialization patterns that can be called multiple times"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(define-public\s+\(init', code, re.IGNORECASE):
+                block = ' '.join(self._strip_comments(l) for l in self.lines[i:min(i+10, len(self.lines))])
+                if 'initialized' not in block.lower() and 'is-initialized' not in block.lower():
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Unprotected Contract Initialization',
+                        'Public init function can be called multiple times. An attacker could re-initialize the contract.',
+                        i + 1, code.strip(),
+                        'Add a data-var initialized flag checked at the start of init.',
+                        'Access Control'
+                    )
+
+    def check_denial_of_service_patterns(self):
+        """Detect patterns that could enable DoS attacks"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if '(map ' in code or '(fold ' in code:
+                context = ' '.join(self._strip_comments(l) for l in self.lines[i:min(i+8, len(self.lines))])
+                if any(c in context for c in ['contract-call?', 'stx-transfer?', 'nft-transfer?', 'ft-transfer?']):
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Denial of Service via External Call in Loop',
+                        'External call inside map/fold. If any call fails, the entire tx reverts.',
+                        i + 1, code.strip(),
+                        'Use pull-over-push: record amounts owed and let recipients withdraw.',
+                        'Denial of Service'
+                    )
+
+    def check_sandwich_attack_vectors(self):
+        """Detect swap/trade functions vulnerable to sandwich attacks"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(define-public\s+\((swap|trade|exchange|buy|sell)', code, re.IGNORECASE):
+                block = ' '.join(self._strip_comments(l) for l in self.lines[i:min(i+15, len(self.lines))])
+                if not any(t in block.lower() for t in ['min-amount', 'slippage', 'min-out', 'minimum', 'max-in', 'deadline']):
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Missing Slippage Protection (Sandwich Attack Vector)',
+                        'Public swap/trade function lacks slippage protection. Vulnerable to sandwich attacks.',
+                        i + 1, code.strip(),
+                        'Add min-amount-out parameter and deadline/block-height check.',
+                        'DeFi Safety'
+                    )
+
+    def check_private_key_material(self):
+        """Detect accidental inclusion of key-like material in contracts"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'0x[0-9a-fA-F]{64}', code):
+                self.add_finding(
+                    Severity.CRITICAL,
+                    'Potential Private Key Material in Contract',
+                    'A 64-char hex string found. If this is a secret, it is permanently visible on-chain.',
+                    i + 1, code.strip()[:80] + '...',
+                    'Never embed secrets in contracts. Use commit-reveal schemes.',
+                    'Secret Exposure'
+                )
+
     def check_sip009_compliance(self):
         """Detect NFT contracts missing required SIP-009 functions"""
         has_nft = any('nft-mint?' in line or 'define-non-fungible-token' in line 
@@ -1300,6 +1385,57 @@ def generate_report(findings: List[Finding], contract_name: str,
         
         return report
 
+    elif output_format == 'html':
+        severity_colors = {
+            'CRITICAL': '#dc2626', 'HIGH': '#ea580c',
+            'MEDIUM': '#ca8a04', 'LOW': '#2563eb', 'INFO': '#6b7280'
+        }
+        severity_counts = {s: len([f for f in findings if f.severity == s])
+                          for s in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']}
+
+        findings_html = ''
+        for idx, finding in enumerate(findings, 1):
+            color = severity_colors.get(finding.severity, '#6b7280')
+            findings_html += f"""
+            <div class='finding'>
+              <div class='finding-header'>
+                <span class='severity-badge' style='background:{color}'>{finding.severity}</span>
+                <span class='finding-title'>#{idx}: {finding.title}</span>
+                <span class='confidence'>Confidence: {finding.confidence}</span>
+              </div>
+              <p><strong>Category:</strong> {finding.category} | <strong>Line:</strong> {finding.line}</p>
+              <p>{finding.description}</p>
+              <pre><code>{finding.code_snippet}</code></pre>
+              <p class='recommendation'><strong>Fix:</strong> {finding.recommendation}</p>
+            </div>"""
+
+        bars = ''.join(f"""<div class='bar-item'>
+          <div class='bar' style='height:{max(severity_counts[s]*8,2)}px;background:{severity_colors[s]}'></div>
+          <span>{s}: {severity_counts[s]}</span></div>""" for s in severity_counts)
+
+        report = f"""<!DOCTYPE html>
+<html><head><meta charset='utf-8'><title>Clarity Shield Report - {contract_name}</title>
+<style>
+body{{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:2rem;background:#0f172a;color:#e2e8f0}}
+h1{{color:#38bdf8}} h2{{color:#94a3b8;border-bottom:1px solid #334155;padding-bottom:.5rem}}
+.summary{{display:flex;gap:2rem;margin:1.5rem 0;padding:1rem;background:#1e293b;border-radius:8px}}
+.bar-item{{text-align:center;font-size:.85rem}} .bar{{width:40px;margin:0 auto 4px;border-radius:3px;min-height:2px}}
+.finding{{background:#1e293b;border-radius:8px;padding:1rem;margin:1rem 0;border-left:3px solid #334155}}
+.finding-header{{display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem}}
+.severity-badge{{color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600}}
+.finding-title{{font-weight:600;font-size:1.05rem}} .confidence{{margin-left:auto;font-size:.8rem;color:#94a3b8}}
+pre{{background:#0f172a;padding:.75rem;border-radius:6px;overflow-x:auto}}
+code{{color:#7dd3fc;font-size:.9rem}} .recommendation{{color:#86efac;font-style:italic}}
+</style></head><body>
+<h1>🛡️ Clarity Shield Security Report</h1>
+<p><strong>Contract:</strong> {contract_name} | <strong>Date:</strong> {datetime.now().strftime('%Y-%m-%d')} | <strong>Findings:</strong> {len(findings)}</p>
+<div class='summary'>{bars}</div>
+<h2>Findings</h2>
+{findings_html}
+<footer style='margin-top:2rem;color:#64748b;font-size:.85rem'>Generated by Clarity Shield v1.7.0</footer>
+</body></html>"""
+        return report
+
 
 def generate_sarif(all_findings: dict, tool_version: str = "1.0.0") -> str:
     """Generate SARIF 2.1.0 output for CI/CD integration (GitHub Code Scanning)"""
@@ -1371,7 +1507,7 @@ def main():
         description="🛡️  Clarity Shield — Smart Contract Security Scanner for Stacks"
     )
     parser.add_argument("target", help="Clarity contract file or directory to scan")
-    parser.add_argument("--format", "-f", choices=["json", "markdown", "sarif"],
+    parser.add_argument("--format", "-f", choices=["json", "markdown", "html", "sarif"],
                         default="markdown", help="Output format (default: markdown)")
     parser.add_argument("--recursive", "-r", action="store_true",
                         help="Recursively scan subdirectories")
@@ -1379,7 +1515,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.6.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.7.0")
 
     args = parser.parse_args()
 
@@ -1421,7 +1557,7 @@ def main():
             else:
                 output_dir = Path('findings')
                 output_dir.mkdir(exist_ok=True)
-                ext = 'json' if args.format == 'json' else 'md'
+                ext = {'json': 'json', 'markdown': 'md', 'html': 'html'}.get(args.format, 'md')
                 output_file = output_dir / f"{scanner.contract_name}_report.{ext}"
                 with open(output_file, 'w') as fh:
                     fh.write(report)
