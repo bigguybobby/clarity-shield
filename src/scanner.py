@@ -53,7 +53,7 @@ class ClarityScanner:
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name} with 45 detectors...")
+        print(f"[*] Scanning {self.contract_name} with 50 detectors...")
         
         self.check_tx_sender_vs_contract_caller()
         self.check_unwrap_usage()
@@ -100,6 +100,11 @@ class ClarityScanner:
         self.check_missing_sender_validation_in_callback()
         self.check_unbounded_string_input()
         self.check_governance_centralization()
+        self.check_fee_manipulation()
+        self.check_deadline_missing_in_swap()
+        self.check_integer_truncation_division()
+        self.check_map_insert_without_existence_check()
+        self.check_stx_transfer_to_variable_recipient()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -1430,6 +1435,102 @@ class ClarityScanner:
             )
 
 
+    def check_fee_manipulation(self):
+        """Detect mutable fee parameters without caps or timelocks"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'define-data-var\s+(fee|fee-rate|fee-bps|swap-fee|protocol-fee)', code):
+                has_cap = any(
+                    re.search(r'(max-fee|fee-cap|fee-limit|<=.*fee|asserts!.*fee)', self._strip_comments(l))
+                    for l in self.lines
+                )
+                if not has_cap:
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Uncapped Fee Parameter — Rug Vector',
+                        'Mutable fee variable with no upper bound. Admin can set fee to 100% and drain user funds.',
+                        i + 1, code.strip()[:80],
+                        'Add a maximum fee cap (e.g., asserts! (<= new-fee u1000)) and consider a timelock.',
+                        'Economic'
+                    )
+                break
+
+    def check_deadline_missing_in_swap(self):
+        """Detect swap/trade functions without deadline/expiry parameters"""
+        in_swap_fn = False
+        swap_line = 0
+        swap_snippet = ""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'define-public\s+\((swap|trade|exchange|execute-swap)', code):
+                in_swap_fn = True
+                swap_line = i + 1
+                swap_snippet = code.strip()[:80]
+            if in_swap_fn and re.search(r'(deadline|expiry|expires-at|valid-until|block-height)', code):
+                in_swap_fn = False
+            if in_swap_fn and re.search(r'^\s*\)\s*$', code):
+                self.add_finding(
+                    Severity.MEDIUM,
+                    'Missing Deadline in Swap Function',
+                    'Swap function has no deadline/expiry parameter — transactions can be held and executed at unfavorable prices.',
+                    swap_line, swap_snippet,
+                    'Add a deadline parameter and check (asserts! (<= block-height deadline)).',
+                    'MEV'
+                )
+                in_swap_fn = False
+
+    def check_integer_truncation_division(self):
+        """Detect division before multiplication (precision loss)"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(\*\s+\(/\s+', code):
+                self.add_finding(
+                    Severity.MEDIUM,
+                    'Division Before Multiplication — Precision Loss',
+                    'Division performed before multiplication can silently truncate to zero in integer arithmetic.',
+                    i + 1, code.strip()[:80],
+                    'Reorder to multiply first, then divide: (* a c) / b.',
+                    'Arithmetic'
+                )
+
+    def check_map_insert_without_existence_check(self):
+        """Detect map-insert that could silently fail if key exists"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(map-insert\s+', code):
+                context_start = max(0, i - 3)
+                context = ' '.join(self._strip_comments(l) for l in self.lines[context_start:i+2])
+                if not re.search(r'(unwrap!|try!|asserts!|match|if\s+\(map-insert)', context):
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        'Unchecked map-insert — Silent Failure',
+                        'map-insert returns false if key already exists, but result is not checked. Data may silently not be written.',
+                        i + 1, code.strip()[:80],
+                        'Use (asserts! (map-insert ...) (err ...)) or check the boolean return value.',
+                        'Data Integrity'
+                    )
+
+    def check_stx_transfer_to_variable_recipient(self):
+        """Detect STX transfers where recipient comes from a data-var (admin-controlled drain)"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            m = re.search(r'\(stx-transfer\?.+\(var-get\s+([a-zA-Z0-9_-]+)\)', code)
+            if m:
+                var_name = m.group(1)
+                is_settable = any(
+                    re.search(rf'var-set\s+{re.escape(var_name)}', self._strip_comments(l))
+                    for l in self.lines
+                )
+                if is_settable:
+                    self.add_finding(
+                        Severity.HIGH,
+                        'STX Transfer to Admin-Controlled Recipient',
+                        f'STX transferred to variable "{var_name}" which can be changed by admin. Potential drain vector.',
+                        i + 1, code.strip()[:80],
+                        'Use a hardcoded treasury address or require multisig approval for recipient changes.',
+                        'Rug Pull'
+                    )
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -1641,7 +1742,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.8.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 1.9.0")
 
     args = parser.parse_args()
 

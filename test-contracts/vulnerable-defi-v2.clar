@@ -1,47 +1,42 @@
-;; Vulnerable DeFi V2 - Tests new detectors (#36-40)
+;; vulnerable-defi-v2.clar — Test contract for v1.9.0 detectors
 
-;; Secret key accidentally left in contract
-(define-constant SECRET-HASH 0x4a2f8c9e1b3d5a7f0e2c4b6d8a1f3e5c7b9d0a2e4f6c8b1d3a5e7f9c0b2d4a6b)
-
-;; Token definition
-(define-fungible-token defi-token)
-(define-data-var total-supply uint u0)
-
-;; Unprotected init - no guard against re-initialization
-(define-public (initialize (new-owner principal))
+;; #46 - Uncapped fee
+(define-data-var fee-rate uint u100)
+(define-public (set-fee (new-fee uint))
   (begin
-    (var-set total-supply u1000000)
-    (ft-mint? defi-token u1000000 new-owner)
+    (asserts! (is-eq tx-sender (var-get contract-owner)) (err u403))
+    (var-set fee-rate new-fee)
+    (ok true)))
+
+;; #47 - Swap without deadline
+(define-public (swap (amount uint) (min-out uint))
+  (let ((fee (/ (* amount (var-get fee-rate)) u10000)))
+    (try! (stx-transfer? (- amount fee) tx-sender (var-get treasury)))
+    (ok (- amount fee))
   )
 )
 
-;; Swap without slippage protection
-(define-public (swap-tokens (amount uint))
-  (let ((price (var-get total-supply)))
-    (stx-transfer? amount tx-sender (as-contract tx-sender))
-  )
+;; #48 - Division before multiplication
+(define-read-only (calc-share (amount uint) (total uint) (reward uint))
+  (* (/ amount total) reward)
 )
 
-;; DoS via external calls in fold
-(define-public (distribute-rewards (recipients (list 100 principal)))
+;; #49 - Unchecked map-insert
+(define-map user-stakes { user: principal } { amount: uint })
+(define-public (stake (amount uint))
   (begin
-    (fold distribute-to-one recipients u0)
-    (ok true)
-  )
-)
+    (map-insert user-stakes { user: tx-sender } { amount: amount })
+    (ok true)))
 
-(define-private (distribute-to-one (recipient principal) (idx uint))
+;; #50 - STX transfer to variable recipient
+(define-data-var treasury principal 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM)
+(define-data-var contract-owner principal 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM)
+
+(define-public (set-treasury (new-treasury principal))
   (begin
-    (unwrap-panic (stx-transfer? u100 (as-contract tx-sender) recipient))
-    (+ idx u1)
-  )
-)
+    (asserts! (is-eq tx-sender (var-get contract-owner)) (err u403))
+    (var-set treasury new-treasury)
+    (ok true)))
 
-;; Unsafe fold accumulator
-(define-read-only (sum-balances (accounts (list 200 principal)))
-  (fold add-balance accounts u0)
-)
-
-(define-private (add-balance (account principal) (acc uint))
-  (+ acc (ft-get-balance defi-token account))
-)
+(define-public (withdraw (amount uint))
+  (stx-transfer? amount (as-contract tx-sender) (var-get treasury)))
