@@ -53,7 +53,7 @@ class ClarityScanner:
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name} with 50 detectors...")
+        print(f"[*] Scanning {self.contract_name} with 55 detectors...")
         
         self.check_tx_sender_vs_contract_caller()
         self.check_unwrap_usage()
@@ -105,6 +105,11 @@ class ClarityScanner:
         self.check_integer_truncation_division()
         self.check_map_insert_without_existence_check()
         self.check_stx_transfer_to_variable_recipient()
+        self.check_public_data_var_setter()
+        self.check_response_type_mismatch()
+        self.check_list_append_in_loop()
+        self.check_stx_transfer_in_fold()
+        self.check_missing_contract_lock()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -673,135 +678,6 @@ class ClarityScanner:
                     "Best Practice"
                 )
 
-
-
-    def check_unsafe_casting(self):
-        """Detect unsafe int/uint conversions that can cause runtime errors"""
-        for i, line in enumerate(self.lines, 1):
-            code = self._strip_comments(line)
-            if 'to-int' in code or 'to-uint' in code:
-                context_start = max(0, i - 5)
-                context = '\n'.join(self.lines[context_start:i])
-                has_guard = any(k in context for k in ['asserts!', '<=', '>=', '<', '>', 'if ', 'match'])
-                if not has_guard:
-                    cast_fn = 'to-int' if 'to-int' in code else 'to-uint'
-                    self.add_finding(
-                        Severity.MEDIUM,
-                        f"Unsafe {cast_fn} Cast Without Range Check",
-                        f"'{cast_fn}' can fail at runtime if the value is out of range. "
-                        "to-int fails for uint values > MAX_INT, to-uint fails for negative ints. "
-                        "This causes a runtime abort, exploitable for DoS.",
-                        i,
-                        line,
-                        f"Add a range check before casting: "
-                        f"(asserts! (<= value u170141183460469231731687303715884105727) ERR_OVERFLOW) "
-                        f"before (to-int value).",
-                        "Type Safety"
-                    )
-
-    def check_unprotected_token_uri(self):
-        """Detect NFT/FT URI setter functions without access control"""
-        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
-            func_name_lower = func_name.lower()
-            if 'uri' not in func_name_lower and 'metadata' not in func_name_lower:
-                continue
-            func_body = '\n'.join(func_lines)
-            if 'var-set' in func_body:
-                auth_indicators = ['tx-sender', 'contract-caller', 'is-eq', 'asserts!']
-                if not any(k in func_body for k in auth_indicators):
-                    self.add_finding(
-                        Severity.HIGH,
-                        f"Unprotected Token URI Setter '{func_name}'",
-                        "Token URI/metadata setter has no access control. An attacker could "
-                        "change NFT metadata to point to malicious content, enabling phishing "
-                        "or rug-pull scenarios where NFT images/data are swapped.",
-                        func_start,
-                        func_lines[0] if func_lines else '',
-                        "Add owner-only access control: "
-                        "(asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)",
-                        "Access Control"
-                    )
-
-    def check_sip010_compliance(self):
-        """Check if FT contracts implement required SIP-010 functions"""
-        if 'ft-mint?' not in self.content and 'define-fungible-token' not in self.content:
-            return
-        required_fns = ['transfer', 'get-name', 'get-symbol', 'get-decimals',
-                       'get-balance', 'get-total-supply', 'get-token-uri']
-        defined_fns = set()
-        for func_name, _, _, _ in self._iter_function_blocks('public'):
-            defined_fns.add(func_name.lower())
-        for func_name, _, _, _ in self._iter_function_blocks('read-only'):
-            defined_fns.add(func_name.lower())
-
-        missing = [fn for fn in required_fns if fn not in defined_fns]
-        if missing:
-            self.add_finding(
-                Severity.MEDIUM,
-                "Incomplete SIP-010 Fungible Token Interface",
-                f"This contract defines a fungible token but is missing SIP-010 required "
-                f"functions: {', '.join(missing)}. Non-compliant tokens may not work with "
-                "wallets, DEXes, and block explorers.",
-                1,
-                self.lines[0] if self.lines else '',
-                f"Implement the missing functions: {', '.join(missing)}. "
-                "See https://github.com/stacksgov/sips/blob/main/sips/sip-010.md",
-                "Standards Compliance"
-            )
-
-    def check_unguarded_as_contract(self):
-        """Detect as-contract usage without proper authorization context"""
-        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
-            func_body = '\n'.join(func_lines)
-            if 'as-contract' not in func_body:
-                continue
-            # as-contract elevates to contract principal — needs auth
-            auth_before = False
-            for offset, line in enumerate(func_lines):
-                code = self._strip_comments(line)
-                if any(k in code for k in ['asserts!', 'is-eq', 'tx-sender', 'contract-caller']):
-                    auth_before = True
-                if 'as-contract' in code and not auth_before:
-                    self.add_finding(
-                        Severity.HIGH,
-                        f"Unguarded as-contract Privilege Escalation in '{func_name}'",
-                        "'as-contract' grants the function contract-level privileges "
-                        "(can move the contract's own funds/assets). Without prior "
-                        "authorization checks, any caller can trigger privileged operations.",
-                        func_start + offset,
-                        line,
-                        "Add authorization checks BEFORE the as-contract block: "
-                        "(asserts! (is-eq tx-sender (var-get admin)) ERR_UNAUTHORIZED)",
-                        "Privilege Escalation"
-                    )
-                    break
-
-    def check_excessive_data_var_trust(self):
-        """Detect data-var values used directly in transfer amounts without validation"""
-        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
-            func_body = '\n'.join(func_lines)
-            if 'stx-transfer?' not in func_body and 'ft-transfer?' not in func_body:
-                continue
-            # Check if transfer amount comes from var-get without bounds check
-            for offset, line in enumerate(func_lines):
-                code = self._strip_comments(line)
-                if ('stx-transfer?' in code or 'ft-transfer?' in code) and 'var-get' in code:
-                    local_start = max(0, offset - 8)
-                    local_context = '\n'.join(func_lines[local_start:offset + 1])
-                    if not any(k in local_context for k in ['asserts!', '<=', '<', 'min']):
-                        self.add_finding(
-                            Severity.MEDIUM,
-                            f"Transfer Amount from Data Variable Without Bounds in '{func_name}'",
-                            "Transfer amount is read directly from a data variable. If an admin "
-                            "function can set this variable without bounds checking, it could be "
-                            "used to drain funds (either by a compromised admin or governance attack).",
-                            func_start + offset,
-                            line,
-                            "Add maximum bounds on data variable values when they're set, and "
-                            "validate again before using them in transfers.",
-                            "Fund Safety"
-                        )
-                    break
 
 
     def check_unsafe_casting(self):
@@ -1531,6 +1407,124 @@ class ClarityScanner:
                         'Rug Pull'
                     )
 
+
+    def check_public_data_var_setter(self):
+        """Detect public functions that set critical data vars without access control"""
+        critical_vars = ['owner', 'admin', 'treasury', 'fee-rate', 'price', 'oracle', 'paused']
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            if 'var-set' not in func_body:
+                continue
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if 'var-set' in code:
+                    for cv in critical_vars:
+                        if cv in code:
+                            local_ctx = '\n'.join(func_lines[:offset+1])
+                            if 'contract-caller' not in local_ctx and 'tx-sender' not in local_ctx:
+                                self.add_finding(
+                                    Severity.CRITICAL,
+                                    f"Unprotected Critical Variable Setter '{func_name}' (sets {cv})",
+                                    f"Public function sets the critical variable '{cv}' without any "
+                                    "caller validation. Anyone can change ownership, fees, or pause state.",
+                                    func_start + offset,
+                                    line.strip()[:120],
+                                    "Add strict access control: (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)",
+                                    "Access Control"
+                                )
+                            break
+
+    def check_response_type_mismatch(self):
+        """Detect functions with conditional logic but missing error branches"""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            ok_count = 0
+            err_count = 0
+            has_if = False
+            for line in func_lines:
+                code = self._strip_comments(line)
+                if '(if ' in code or '(match ' in code:
+                    has_if = True
+                if '(ok ' in code:
+                    ok_count += 1
+                if '(err ' in code:
+                    err_count += 1
+            if has_if and ok_count > 0 and err_count == 0:
+                self.add_finding(
+                    Severity.MEDIUM,
+                    f"Missing Error Branch in '{func_name}'",
+                    "Function has conditional logic but always returns (ok ...) without "
+                    "any (err ...) branch. Failed conditions may silently succeed.",
+                    func_start,
+                    func_lines[0] if func_lines else '',
+                    "Add explicit (err ...) returns for failure conditions.",
+                    "Error Handling"
+                )
+
+    def check_list_append_in_loop(self):
+        """Detect unbounded list growth via append inside map/fold"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if 'append' in code:
+                context_start = max(0, i - 10)
+                context = '\n'.join(self.lines[context_start:i])
+                if any(k in context for k in ['fold', 'map', 'filter']):
+                    self.add_finding(
+                        Severity.HIGH,
+                        "Unbounded List Growth in Loop",
+                        "Using append inside fold/map/filter can exceed Clarity list limits, "
+                        "causing runtime aborts — a denial of service vector.",
+                        i,
+                        line.strip()[:120],
+                        "Pre-allocate with known max size or add explicit length checks.",
+                        "Resource Safety"
+                    )
+
+    def check_stx_transfer_in_fold(self):
+        """Detect token transfers inside fold/map — batch transfer DoS risk"""
+        for i, line in enumerate(self.lines, 1):
+            code = self._strip_comments(line)
+            if 'stx-transfer?' in code or 'ft-transfer?' in code:
+                context_start = max(0, i - 15)
+                context = '\n'.join(self.lines[context_start:i])
+                if 'fold' in context or 'map' in context:
+                    self.add_finding(
+                        Severity.HIGH,
+                        "Token Transfer Inside Loop (Batch DoS Risk)",
+                        "A single failed transfer in fold/map aborts the entire batch. "
+                        "An attacker can block all payouts by adding a rejecting address.",
+                        i,
+                        line.strip()[:120],
+                        "Use pull-over-push: record amounts owed, let recipients claim separately.",
+                        "Denial of Service"
+                    )
+
+    def check_missing_contract_lock(self):
+        """Detect contracts with admin + transfers but no emergency pause"""
+        has_admin_fn = False
+        has_pause = False
+        has_transfer = False
+        for func_name, _, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(func_lines)
+            name_lower = func_name.lower()
+            if any(k in name_lower for k in ['set-admin', 'set-owner', 'upgrade', 'migrate']):
+                has_admin_fn = True
+            if any(k in name_lower for k in ['pause', 'lock', 'freeze', 'emergency']):
+                has_pause = True
+            if 'stx-transfer?' in func_body or 'ft-transfer?' in func_body:
+                has_transfer = True
+        if has_admin_fn and has_transfer and not has_pause:
+            self.add_finding(
+                Severity.MEDIUM,
+                "No Emergency Pause Mechanism",
+                "Contract has admin functions and transfers but no pause mechanism. "
+                "No way to halt operations during an active exploit.",
+                1,
+                self.lines[0] if self.lines else '',
+                "Add (define-data-var paused bool false) with admin-only toggle and check in critical fns.",
+                "Emergency Response"
+            )
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -1742,7 +1736,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 1.9.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 2.0.0")
 
     args = parser.parse_args()
 
