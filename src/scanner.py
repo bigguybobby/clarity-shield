@@ -53,7 +53,7 @@ class ClarityScanner:
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name} with 55 detectors...")
+        print(f"[*] Scanning {self.contract_name} with 60 detectors...")
         
         self.check_tx_sender_vs_contract_caller()
         self.check_unwrap_usage()
@@ -110,6 +110,11 @@ class ClarityScanner:
         self.check_list_append_in_loop()
         self.check_stx_transfer_in_fold()
         self.check_missing_contract_lock()
+        self.check_unchecked_contract_call_response()
+        self.check_frontrunning_sensitive_operations()
+        self.check_double_spend_map_pattern()
+        self.check_missing_principal_check_in_callback()
+        self.check_unsafe_stx_liquid_supply()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -1525,6 +1530,104 @@ class ClarityScanner:
             )
 
 
+    def check_unchecked_contract_call_response(self):
+        """Detect contract-call? results that are not unwrapped or matched"""
+        for func_name, start, end, func_lines in self._iter_function_blocks('public'):
+            for i, line in enumerate(func_lines):
+                stripped = self._strip_comments(line)
+                if 'contract-call?' in stripped:
+                    context = chr(10).join(func_lines[max(0,i-1):i+3])
+                    if not re.search(r'(unwrap[!-]|match|try!|asserts!)', context):
+                        self.add_finding(
+                            Severity.HIGH,
+                            'Unchecked Cross-Contract Call Response',
+                            f"contract-call? in '{func_name}' — result may be silently ignored. "
+                            'A failed external call will not revert the transaction.',
+                            start + i + 1,
+                            stripped.strip(),
+                            'Always unwrap! or match the response from contract-call? to handle errors.',
+                            'Error Handling'
+                        )
+
+    def check_frontrunning_sensitive_operations(self):
+        """Detect swap/trade/bid functions without slippage or deadline params"""
+        sensitive_keywords = ['swap', 'trade', 'bid', 'buy', 'sell', 'exchange', 'liquidat']
+        for func_name, start, _, func_lines in self._iter_function_blocks('public'):
+            name_lower = func_name.lower()
+            if any(k in name_lower for k in sensitive_keywords):
+                func_body = chr(10).join(func_lines)
+                has_slippage = re.search(r'(min-amount|max-amount|slippage|min-out|max-in|deadline|min-received)', func_body, re.IGNORECASE)
+                if not has_slippage:
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Frontrunning-Sensitive Operation Without Slippage Protection',
+                        f"Function '{func_name}' performs trading/swapping but has no slippage or deadline parameter. "
+                        'Miners or observers can frontrun and extract value.',
+                        start + 1,
+                        self.lines[start].strip(),
+                        'Add min-amount-out or deadline parameters to protect users from sandwich attacks.',
+                        'MEV Protection'
+                    )
+
+    def check_double_spend_map_pattern(self):
+        """Detect map-get? followed by map-set without map-delete in claim/redeem flows"""
+        claim_keywords = ['claim', 'redeem', 'withdraw', 'collect', 'harvest']
+        for func_name, start, _, func_lines in self._iter_function_blocks('public'):
+            name_lower = func_name.lower()
+            if any(k in name_lower for k in claim_keywords):
+                func_body = chr(10).join(func_lines)
+                has_get = 'map-get?' in func_body
+                has_delete = 'map-delete' in func_body
+                has_set = 'map-set' in func_body
+                if has_get and not has_delete and not has_set:
+                    self.add_finding(
+                        Severity.CRITICAL,
+                        'Potential Double-Claim Vulnerability',
+                        f"Function '{func_name}' reads a map but never deletes/updates the entry. "
+                        'Users may be able to claim the same reward multiple times.',
+                        start + 1,
+                        self.lines[start].strip(),
+                        'Use map-delete or map-set to mark claims as consumed after successful claim.',
+                        'Replay Attack'
+                    )
+
+    def check_missing_principal_check_in_callback(self):
+        """Detect public callback-style functions without sender/caller validation"""
+        callback_keywords = ['callback', 'hook', 'on-', 'handle-', 'receive', 'notify']
+        for func_name, start, _, func_lines in self._iter_function_blocks('public'):
+            name_lower = func_name.lower()
+            if any(k in name_lower for k in callback_keywords):
+                func_body = chr(10).join(func_lines)
+                has_auth = re.search(r'(tx-sender|contract-caller|is-eq\s+\S+\s+\S*sender)', func_body)
+                if not has_auth:
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Unprotected Public Callback Function',
+                        f"Public function '{func_name}' appears to be a callback/hook with no sender validation. "
+                        'Anyone can invoke it to trigger unintended state changes.',
+                        start + 1,
+                        self.lines[start].strip(),
+                        'Validate that the caller is the expected contract or principal.',
+                        'Access Control'
+                    )
+
+    def check_unsafe_stx_liquid_supply(self):
+        """Detect reliance on stx-liquid-supply for pricing or share calculations"""
+        for i, line in enumerate(self.lines):
+            stripped = self._strip_comments(line)
+            if 'stx-liquid-supply' in stripped:
+                self.add_finding(
+                    Severity.MEDIUM,
+                    'Reliance on stx-liquid-supply for Calculations',
+                    'stx-liquid-supply changes with unlocking schedules and may be manipulable '
+                    'in edge cases. Using it for share/price calculations can lead to inaccurate valuations.',
+                    i + 1,
+                    stripped.strip(),
+                    'Use a fixed total supply constant or a trusted oracle for pricing calculations.',
+                    'Data Integrity'
+                )
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -1736,7 +1839,7 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 2.0.0")
+    parser.add_argument("--version", action="version", version="clarity-shield 2.1.0")
 
     args = parser.parse_args()
 

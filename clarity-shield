@@ -38,7 +38,7 @@ Examples:
                        help='Recursively scan directory')
     parser.add_argument('--severity', '-s', choices=['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'],
                        default=None, help='Minimum severity to report')
-    parser.add_argument('--version', '-v', action='version', version='Clarity Shield 1.6.0')
+    parser.add_argument('--version', '-v', action='version', version='Clarity Shield 2.1.0')
     
     args = parser.parse_args()
     
