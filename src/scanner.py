@@ -1306,7 +1306,7 @@ class ClarityScanner:
             if re.search(r'\(define-public\s+\((mint|ft-mint|nft-mint)', code):
                 # Look ahead for auth check
                 context = ' '.join(self._strip_comments(l) for l in self.lines[i-1:min(i+15, len(self.lines))])
-                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender)', context):
+                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender|asserts!\s*\(\s*is-(owner|admin|authorized|protocol|minter))', context):
                     self.add_finding(
                         Severity.CRITICAL,
                         'Unprotected Mint Function',
@@ -1420,7 +1420,7 @@ class ClarityScanner:
             if re.search(r'\(define-public\s+\((burn|ft-burn|nft-burn)', code):
                 # Look ahead for auth check
                 context = ' '.join(self._strip_comments(l) for l in self.lines[i-1:min(i+15, len(self.lines))])
-                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender)', context):
+                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender|asserts!\s*\(\s*is-(owner|admin|authorized|protocol|minter))', context):
                     self.add_finding(
                         Severity.HIGH,
                         'Unprotected Burn Function',
