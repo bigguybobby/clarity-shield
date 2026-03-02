@@ -12,7 +12,15 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 
-from scanner import ClarityScanner, generate_report, generate_sarif
+from scanner import (
+    ClarityScanner,
+    generate_report,
+    generate_sarif,
+    load_config,
+    print_summary_dashboard,
+    VERSION,
+    SEVERITY_ORDER,
+)
 
 
 def main():
@@ -31,14 +39,16 @@ Examples:
     
     parser.add_argument('action', choices=['scan'], help='Action to perform')
     parser.add_argument('path', help='Contract file or directory to scan')
-    parser.add_argument('--format', choices=['json', 'markdown', 'sarif'], default='markdown',
+    parser.add_argument('--format', choices=['json', 'markdown', 'html', 'sarif'], default='markdown',
                        help='Output format (default: markdown)')
     parser.add_argument('--output', '-o', help='Output file path')
     parser.add_argument('--recursive', '-r', action='store_true',
                        help='Recursively scan directory')
     parser.add_argument('--severity', '-s', choices=['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'],
                        default=None, help='Minimum severity to report')
-    parser.add_argument('--version', '-v', action='version', version='Clarity Shield 2.1.0')
+    parser.add_argument('--config', '-c', help='Path to config file (.toml/.yaml/.yml)')
+    parser.add_argument('--summary', action='store_true', help='Print compact summary dashboard table')
+    parser.add_argument('--version', '-v', action='version', version=f'Clarity Shield {VERSION}')
     
     args = parser.parse_args()
     
@@ -66,11 +76,25 @@ Examples:
             print(f"❌ No .clar files found in '{args.path}'")
             sys.exit(1)
     
-    print(f"🛡️  Clarity Shield v1.6.0")
+    try:
+        config = load_config(args.config)
+    except ValueError as exc:
+        print(f"❌ Error: {exc}")
+        sys.exit(1)
+
+    scanner_cfg = config.get("scanner", {}) if isinstance(config.get("scanner", {}), dict) else {}
+    configured_default = scanner_cfg.get("default_severity", config.get("default_severity"))
+    if configured_default is not None:
+        configured_default = str(configured_default).upper()
+        if configured_default not in SEVERITY_ORDER:
+            print(f"❌ Error: Invalid severity '{configured_default}' in config")
+            sys.exit(1)
+
+    print(f"🛡️  Clarity Shield v{VERSION}")
     print(f"📂 Found {len(contracts)} contract(s) to scan\n")
-    
-    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-    min_idx = severity_order.index(args.severity) if args.severity else len(severity_order) - 1
+
+    effective_severity = args.severity or configured_default
+    min_idx = SEVERITY_ORDER.index(effective_severity) if effective_severity else len(SEVERITY_ORDER) - 1
 
     all_findings = []
     all_findings_by_name = {}
@@ -79,9 +103,9 @@ Examples:
     
     for contract_path in contracts:
         print(f"{'='*60}")
-        scanner = ClarityScanner(str(contract_path))
+        scanner = ClarityScanner(str(contract_path), config=config)
         findings = scanner.scan()
-        findings = [f for f in findings if severity_order.index(f.severity) <= min_idx]
+        findings = [f for f in findings if SEVERITY_ORDER.index(f.severity) <= min_idx]
         all_findings.extend(findings)
         all_findings_by_name[scanner.contract_name] = findings
         
@@ -97,7 +121,7 @@ Examples:
             if args.output:
                 output_path = Path(args.output)
             else:
-                ext = 'json' if args.format == 'json' else 'md'
+                ext = {'json': 'json', 'markdown': 'md', 'html': 'html'}.get(args.format, 'md')
                 output_dir = Path('findings')
                 output_dir.mkdir(exist_ok=True)
                 output_path = output_dir / f"{scanner.contract_name}_report.{ext}"
@@ -115,6 +139,9 @@ Examples:
         with open(output_path, 'w') as f:
             f.write(sarif_output)
         print(f"\n📄 SARIF report: {output_path}")
+
+    if args.summary:
+        print_summary_dashboard(all_findings_by_name)
     
     # Summary
     print(f"{'='*60}")

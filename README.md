@@ -20,7 +20,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
 
 ## ✨ Features
 
-- 🔍 **35 Vulnerability Detectors**:
+- 🔍 **65 Vulnerability Detectors**:
   - Authorization bypass via `contract-caller` misuse
   - Missing access control checks on public functions
   - Unsafe `unwrap!` / `unwrap-panic` usage (DoS vectors)
@@ -42,8 +42,15 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
   - Redundant authorization checks (code quality) — INFO
   - Unprotected burn functions (asset destruction) — HIGH
   - Missing SIP-009 NFT standard compliance — MEDIUM
+  - Unbounded `map-set` in public function (state bloat DoS) — HIGH
+  - Missing SIP-010 `get-symbol` / `get-decimals` metadata methods — MEDIUM
+  - Unsafe string concatenation without length checks — MEDIUM
+  - Governance proposal execution without timelock — CRITICAL
+  - Unvalidated trait parameter in public function — HIGH
 
-- 📊 **Multiple Output Formats**: JSON and Markdown reports with severity ratings
+- ⚙️ **Configurable Scans**: TOML/YAML config for detector enable/disable, severity defaults, and custom regex rules
+- 📊 **Multiple Output Formats**: JSON, Markdown, HTML, and SARIF reports
+- 🧾 **Summary Dashboard**: Compact per-contract severity table via `--summary`
 - 🚀 **CI/CD Integration**: GitHub Actions workflow included
 - 🎨 **Clear Severity Ratings**: CRITICAL → INFO with actionable recommendations
 - ⚡ **Fast**: Pure Python implementation with regex-based pattern matching
@@ -75,11 +82,58 @@ pip install -e .
 # Scan with JSON output
 ./clarity-shield scan contract.clar --format json
 
+# Scan with config file (TOML recommended)
+python3 src/scanner.py contract.clar --config clarity-shield.toml
+
+# Print compact summary dashboard
+python3 src/scanner.py test-contracts/ --recursive --summary --no-save
+
 # Scan entire directory
 ./clarity-shield scan ./contracts/ --recursive
 
 # Save to specific file
 ./clarity-shield scan contract.clar --output report.md
+```
+
+### Config File
+
+Clarity Shield supports `--config` with `.toml`, `.yaml`, or `.yml`.
+TOML is recommended because Python 3.11+ includes `tomllib`.
+
+```bash
+python3 src/scanner.py test-contracts/ -r --config clarity-shield.toml
+```
+
+Sample config: `clarity-shield.toml`
+
+```toml
+[scanner]
+default_severity = "LOW"
+enable_detectors = [61, 62, 63, 64, 65]
+disable_detectors = [6]
+
+[severity_overrides]
+"64" = "CRITICAL"
+
+[[custom_rules]]
+id = "CUST-001"
+title = "Custom Policy Check"
+severity = "LOW"
+pattern = "\\(asserts!"
+description = "Example custom rule."
+recommendation = "Review assertions for policy compliance."
+```
+
+### Summary Dashboard
+
+Use `--summary` to print a compact cross-contract severity dashboard:
+
+```text
+┌─────────────┬──────────┬──────┬────────┬─────┬──────┐
+│ Contract    │ CRITICAL │ HIGH │ MEDIUM │ LOW │ INFO │
+├─────────────┼──────────┼──────┼────────┼─────┼──────┤
+│ my-token    │    0     │  3   │   5    │  2  │  1   │
+└─────────────┴──────────┴──────┴────────┴─────┴──────┘
 ```
 
 ### Example Output
@@ -272,6 +326,7 @@ The `test-contracts/` directory contains example vulnerable contracts:
 - `vulnerable-token.clar` - Token with authorization and error handling issues
 - `vulnerable-vault.clar` - Vault with unsafe arithmetic and map access
 - `vulnerable-nft.clar` - NFT marketplace with validation gaps
+- `vulnerable-v4.clar` - Covers detectors #61-65 (config-era additions)
 - `safe-token.clar` - Example of properly secured contract
 
 Run against test contracts:

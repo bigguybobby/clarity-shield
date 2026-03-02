@@ -8,10 +8,19 @@ import re
 import json
 import sys
 from dataclasses import dataclass, asdict
-from typing import List, Iterator, Tuple
+from typing import Any, Dict, List, Iterator, Tuple, Optional, Set
 from pathlib import Path
 from enum import Enum
 from datetime import datetime
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    tomllib = None  # type: ignore
+
+
+VERSION = "2.2.0"
+SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 
 
 class Severity(Enum):
@@ -38,83 +47,352 @@ class Finding:
         return asdict(self)
 
 
+def _parse_simple_value(raw: str) -> Any:
+    """Parse a scalar-like config value from TOML/YAML-like text."""
+    value = raw.strip()
+    if not value:
+        return ""
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    if value.lower() in {"true", "false"}:
+        return value.lower() == "true"
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        parts = []
+        chunk = []
+        in_quote = False
+        quote_char = ""
+        for char in inner:
+            if char in {"'", '"'}:
+                if not in_quote:
+                    in_quote = True
+                    quote_char = char
+                elif quote_char == char:
+                    in_quote = False
+            if char == "," and not in_quote:
+                part = "".join(chunk).strip()
+                if part:
+                    parts.append(_parse_simple_value(part))
+                chunk = []
+                continue
+            chunk.append(char)
+        tail = "".join(chunk).strip()
+        if tail:
+            parts.append(_parse_simple_value(tail))
+        return parts
+    return value
+
+
+def _load_simple_yaml_config(config_path: Path) -> Dict[str, Any]:
+    """
+    Minimal YAML parser for Clarity Shield config files (no external dependency).
+
+    Supports maps, inline lists, and simple `- item` lists used by scanner config.
+    """
+    data: Dict[str, Any] = {}
+    current_section: Optional[str] = None
+    pending_list_key: Optional[str] = None
+    current_rule: Optional[Dict[str, Any]] = None
+    custom_rule_indent: Optional[int] = None
+
+    with config_path.open("r", encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.split("#", 1)[0].rstrip("\n")
+            if not line.strip():
+                continue
+
+            indent = len(line) - len(line.lstrip(" "))
+            stripped = line.strip()
+
+            if indent == 0:
+                pending_list_key = None
+                current_rule = None
+                custom_rule_indent = None
+                if ":" in stripped:
+                    key, value = stripped.split(":", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if not value:
+                        if key in {"scanner", "severity_overrides"}:
+                            data[key] = {}
+                        elif key == "custom_rules":
+                            data[key] = []
+                        else:
+                            data[key] = {}
+                        current_section = key
+                    else:
+                        data[key] = _parse_simple_value(value)
+                        current_section = None
+                continue
+
+            if current_section is None:
+                continue
+
+            if current_section == "custom_rules":
+                if stripped.startswith("- "):
+                    item = stripped[2:].strip()
+                    current_rule = {}
+                    custom_rule_indent = indent
+                    data.setdefault("custom_rules", []).append(current_rule)
+                    if item and ":" in item:
+                        key, value = item.split(":", 1)
+                        current_rule[key.strip()] = _parse_simple_value(value.strip())
+                elif current_rule is not None and custom_rule_indent is not None and indent > custom_rule_indent and ":" in stripped:
+                    key, value = stripped.split(":", 1)
+                    current_rule[key.strip()] = _parse_simple_value(value.strip())
+                continue
+
+            section_obj = data.setdefault(current_section, {})
+            if not isinstance(section_obj, dict):
+                continue
+
+            if stripped.startswith("- ") and pending_list_key:
+                section_obj.setdefault(pending_list_key, []).append(_parse_simple_value(stripped[2:].strip()))
+                continue
+
+            if ":" not in stripped:
+                continue
+
+            key, value = stripped.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if value:
+                section_obj[key] = _parse_simple_value(value)
+                pending_list_key = None
+            else:
+                section_obj[key] = []
+                pending_list_key = key
+
+    return data
+
+
+def load_config(config_path: Optional[str]) -> Dict[str, Any]:
+    """Load scanner config from TOML or YAML file."""
+    if not config_path:
+        return {}
+
+    path = Path(config_path)
+    if not path.exists():
+        raise ValueError(f"Config file '{config_path}' not found")
+
+    suffix = path.suffix.lower()
+    if suffix == ".toml":
+        if tomllib is None:
+            raise ValueError("TOML config requires Python 3.11+ (tomllib not available)")
+        with path.open("rb") as fh:
+            raw = tomllib.load(fh)
+    elif suffix in {".yaml", ".yml"}:
+        raw = _load_simple_yaml_config(path)
+    else:
+        raise ValueError("Unsupported config type. Use .toml, .yaml, or .yml")
+
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid config: top-level object must be a table/map")
+    return raw
+
+
+def _normalize_severity(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in SEVERITY_ORDER:
+        raise ValueError(f"Invalid severity '{value}'. Use one of: {', '.join(SEVERITY_ORDER)}")
+    return normalized
+
+
 class ClarityScanner:
     """Main scanner class for Clarity contracts"""
-    
-    def __init__(self, contract_path: str):
+
+    DETECTOR_SPECS: List[Tuple[int, str]] = [
+        (1, "check_tx_sender_vs_contract_caller"),
+        (2, "check_unwrap_usage"),
+        (3, "check_arithmetic_safety"),
+        (4, "check_public_function_auth"),
+        (5, "check_data_map_validation"),
+        (6, "check_hardcoded_principals"),
+        (7, "check_response_handling"),
+        (8, "check_missing_post_conditions"),
+        (9, "check_stx_transfer_safety"),
+        (10, "check_block_height_dependency"),
+        (11, "check_read_only_side_effects"),
+        (12, "check_trait_implementation_safety"),
+        (13, "check_reentrancy_patterns"),
+        (14, "check_magic_numbers"),
+        (15, "check_principal_injection"),
+        (16, "check_unbounded_loops"),
+        (17, "check_flash_loan_patterns"),
+        (18, "check_missing_event_logging"),
+        (19, "check_unsafe_casting"),
+        (20, "check_unprotected_token_uri"),
+        (21, "check_sip010_compliance"),
+        (22, "check_unguarded_as_contract"),
+        (23, "check_excessive_data_var_trust"),
+        (24, "check_deprecated_get_block_info"),
+        (25, "check_nft_owner_validation"),
+        (26, "check_map_delete_without_check"),
+        (27, "check_stx_balance_dependency"),
+        (28, "check_missing_error_constants"),
+        (29, "check_unprotected_mint"),
+        (30, "check_price_oracle_manipulation"),
+        (31, "check_time_lock_bypass"),
+        (32, "check_unchecked_cross_contract_calls"),
+        (33, "check_redundant_auth_checks"),
+        (34, "check_unprotected_burn"),
+        (35, "check_sip009_compliance"),
+        (36, "check_unsafe_fold_accumulator"),
+        (37, "check_unprotected_contract_init"),
+        (38, "check_denial_of_service_patterns"),
+        (39, "check_sandwich_attack_vectors"),
+        (40, "check_private_key_material"),
+        (41, "check_unsafe_to_int_to_uint"),
+        (42, "check_unchecked_stx_get_balance"),
+        (43, "check_missing_sender_validation_in_callback"),
+        (44, "check_unbounded_string_input"),
+        (45, "check_governance_centralization"),
+        (46, "check_fee_manipulation"),
+        (47, "check_deadline_missing_in_swap"),
+        (48, "check_integer_truncation_division"),
+        (49, "check_map_insert_without_existence_check"),
+        (50, "check_stx_transfer_to_variable_recipient"),
+        (51, "check_public_data_var_setter"),
+        (52, "check_response_type_mismatch"),
+        (53, "check_list_append_in_loop"),
+        (54, "check_stx_transfer_in_fold"),
+        (55, "check_missing_contract_lock"),
+        (56, "check_unchecked_contract_call_response"),
+        (57, "check_frontrunning_sensitive_operations"),
+        (58, "check_double_spend_map_pattern"),
+        (59, "check_missing_principal_check_in_callback"),
+        (60, "check_unsafe_stx_liquid_supply"),
+        (61, "check_unbounded_map_set_public"),
+        (62, "check_missing_sip010_metadata_functions"),
+        (63, "check_unsafe_string_concat_without_length_check"),
+        (64, "check_governance_execution_without_timelock"),
+        (65, "check_unvalidated_trait_parameter"),
+    ]
+
+    def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
         self.contract_path = Path(contract_path)
         self.contract_name = self.contract_path.stem
         self.findings: List[Finding] = []
         self.lines: List[str] = []
+        self.config = config or {}
+        self._active_detector_id: Optional[int] = None
+        self._active_detector_name: str = ""
+        self.enabled_detector_ids: Set[int] = set()
+        self.disabled_detector_ids: Set[int] = set()
+        self.severity_overrides: Dict[str, str] = {}
+        self.custom_rules: List[Dict[str, Any]] = []
         
-        with open(contract_path, 'r') as f:
+        with open(contract_path, 'r', encoding="utf-8") as f:
             self.content = f.read()
             self.lines = self.content.split('\n')
+
+        self._load_scanner_config()
+
+    def _resolve_detector_ids(self, selectors: Any) -> Set[int]:
+        if not isinstance(selectors, list):
+            return set()
+
+        known_by_id = {detector_id for detector_id, _ in self.DETECTOR_SPECS}
+        known_by_name = {
+            method_name.lower(): detector_id
+            for detector_id, method_name in self.DETECTOR_SPECS
+        }
+        known_by_short_name = {
+            method_name.replace("check_", "").lower(): detector_id
+            for detector_id, method_name in self.DETECTOR_SPECS
+        }
+
+        resolved: Set[int] = set()
+        for selector in selectors:
+            if isinstance(selector, int) and selector in known_by_id:
+                resolved.add(selector)
+                continue
+
+            selector_str = str(selector).strip().lower()
+            if not selector_str:
+                continue
+            if selector_str.isdigit() and int(selector_str) in known_by_id:
+                resolved.add(int(selector_str))
+                continue
+            if selector_str in known_by_name:
+                resolved.add(known_by_name[selector_str])
+                continue
+            if selector_str in known_by_short_name:
+                resolved.add(known_by_short_name[selector_str])
+
+        return resolved
+
+    def _load_scanner_config(self) -> None:
+        scanner_cfg = self.config.get("scanner", {})
+        if not isinstance(scanner_cfg, dict):
+            scanner_cfg = {}
+
+        # Keep compatibility with flat configs.
+        if not scanner_cfg and any(key in self.config for key in ["enable_detectors", "disable_detectors"]):
+            scanner_cfg = self.config
+
+        self.enabled_detector_ids = self._resolve_detector_ids(scanner_cfg.get("enable_detectors", []))
+        self.disabled_detector_ids = self._resolve_detector_ids(scanner_cfg.get("disable_detectors", []))
+
+        overrides_raw = self.config.get("severity_overrides", {})
+        if isinstance(overrides_raw, dict):
+            for key, value in overrides_raw.items():
+                try:
+                    self.severity_overrides[str(key).strip().lower()] = _normalize_severity(str(value))
+                except ValueError:
+                    continue
+
+        custom_rules_raw = self.config.get("custom_rules", [])
+        if isinstance(custom_rules_raw, list):
+            self.custom_rules = [rule for rule in custom_rules_raw if isinstance(rule, dict)]
+
+    def _override_severity(self, base_severity: Severity, title: str) -> Severity:
+        keys_to_try = []
+        if self._active_detector_id is not None:
+            keys_to_try.append(str(self._active_detector_id))
+        if self._active_detector_name:
+            keys_to_try.append(self._active_detector_name.lower())
+            keys_to_try.append(self._active_detector_name.replace("check_", "").lower())
+        keys_to_try.append(title.lower())
+
+        for key in keys_to_try:
+            override = self.severity_overrides.get(key)
+            if override:
+                return Severity[override]
+        return base_severity
     
     def scan(self) -> List[Finding]:
         """Run all vulnerability checks"""
-        print(f"[*] Scanning {self.contract_name} with 60 detectors...")
-        
-        self.check_tx_sender_vs_contract_caller()
-        self.check_unwrap_usage()
-        self.check_arithmetic_safety()
-        self.check_public_function_auth()
-        self.check_data_map_validation()
-        self.check_hardcoded_principals()
-        self.check_response_handling()
-        self.check_missing_post_conditions()
-        self.check_stx_transfer_safety()
-        self.check_block_height_dependency()
-        self.check_read_only_side_effects()
-        self.check_trait_implementation_safety()
-        self.check_reentrancy_patterns()
-        self.check_magic_numbers()
-        self.check_principal_injection()
-        self.check_unbounded_loops()
-        self.check_flash_loan_patterns()
-        self.check_missing_event_logging()
-        self.check_unsafe_casting()
-        self.check_unprotected_token_uri()
-        self.check_sip010_compliance()
-        self.check_unguarded_as_contract()
-        self.check_excessive_data_var_trust()
-        self.check_deprecated_get_block_info()
-        self.check_nft_owner_validation()
-        self.check_map_delete_without_check()
-        self.check_stx_balance_dependency()
-        self.check_missing_error_constants()
-        self.check_unprotected_mint()
-        self.check_price_oracle_manipulation()
-        self.check_time_lock_bypass()
-        self.check_unchecked_cross_contract_calls()
-        self.check_redundant_auth_checks()
-        self.check_unprotected_burn()
-        self.check_sip009_compliance()
-        self.check_unsafe_fold_accumulator()
-        self.check_unprotected_contract_init()
-        self.check_denial_of_service_patterns()
-        self.check_sandwich_attack_vectors()
-        self.check_private_key_material()
-        self.check_unsafe_to_int_to_uint()
-        self.check_unchecked_stx_get_balance()
-        self.check_missing_sender_validation_in_callback()
-        self.check_unbounded_string_input()
-        self.check_governance_centralization()
-        self.check_fee_manipulation()
-        self.check_deadline_missing_in_swap()
-        self.check_integer_truncation_division()
-        self.check_map_insert_without_existence_check()
-        self.check_stx_transfer_to_variable_recipient()
-        self.check_public_data_var_setter()
-        self.check_response_type_mismatch()
-        self.check_list_append_in_loop()
-        self.check_stx_transfer_in_fold()
-        self.check_missing_contract_lock()
-        self.check_unchecked_contract_call_response()
-        self.check_frontrunning_sensitive_operations()
-        self.check_double_spend_map_pattern()
-        self.check_missing_principal_check_in_callback()
-        self.check_unsafe_stx_liquid_supply()
+        enabled_specs: List[Tuple[int, str]] = []
+        for detector_id, method_name in self.DETECTOR_SPECS:
+            if self.enabled_detector_ids and detector_id not in self.enabled_detector_ids:
+                continue
+            if detector_id in self.disabled_detector_ids:
+                continue
+            enabled_specs.append((detector_id, method_name))
+
+        detector_text = f"{len(enabled_specs)} detectors"
+        if self.custom_rules:
+            detector_text += f" + {len(self.custom_rules)} custom rules"
+        print(f"[*] Scanning {self.contract_name} with {detector_text}...")
+
+        for detector_id, method_name in enabled_specs:
+            detector = getattr(self, method_name, None)
+            if detector is None:
+                continue
+            self._active_detector_id = detector_id
+            self._active_detector_name = method_name
+            detector()
+
+        self._active_detector_id = None
+        self._active_detector_name = ""
+        self.check_custom_rules()
         
         print(f"[+] Found {len(self.findings)} potential issues")
         return self.findings
@@ -122,8 +400,9 @@ class ClarityScanner:
     def add_finding(self, severity: Severity, title: str, description: str,
                    line: int, code_snippet: str, recommendation: str, category: str):
         """Add a security finding"""
+        final_severity = self._override_severity(severity, title)
         finding = Finding(
-            severity=severity.value,
+            severity=final_severity.value,
             title=title,
             description=description,
             line=line,
@@ -132,6 +411,70 @@ class ClarityScanner:
             category=category
         )
         self.findings.append(finding)
+
+    def check_custom_rules(self):
+        """Run user-defined regex rules loaded from config."""
+        if not self.custom_rules:
+            return
+
+        for idx, rule in enumerate(self.custom_rules, 1):
+            pattern = str(rule.get("pattern", "")).strip()
+            if not pattern:
+                continue
+
+            rule_id = str(rule.get("id", f"custom-{idx}"))
+            title = str(rule.get("title", f"Custom Rule {rule_id}"))
+            severity_name = str(rule.get("severity", "MEDIUM"))
+            try:
+                severity = Severity[_normalize_severity(severity_name)]
+            except ValueError:
+                severity = Severity.MEDIUM
+
+            description = str(
+                rule.get(
+                    "description",
+                    f"Custom rule '{rule_id}' matched configured pattern: {pattern}",
+                )
+            )
+            recommendation = str(
+                rule.get("recommendation", "Review this pattern and apply project-specific hardening.")
+            )
+            category = str(rule.get("category", "Custom Rule"))
+            confidence = str(rule.get("confidence", "MEDIUM"))
+
+            flags = re.IGNORECASE if bool(rule.get("ignore_case", True)) else 0
+            try:
+                regex = re.compile(pattern, flags)
+            except re.error:
+                continue
+
+            max_matches = rule.get("max_matches", 0)
+            if isinstance(max_matches, str) and max_matches.isdigit():
+                max_matches = int(max_matches)
+            if not isinstance(max_matches, int) or max_matches < 0:
+                max_matches = 0
+
+            match_count = 0
+            previous_detector_name = self._active_detector_name
+            self._active_detector_name = f"custom-rule:{rule_id}".lower()
+            for i, line in enumerate(self.lines, 1):
+                code = self._strip_comments(line)
+                if regex.search(code):
+                    self.add_finding(
+                        severity,
+                        title,
+                        description,
+                        i,
+                        line,
+                        recommendation,
+                        category,
+                    )
+                    if self.findings:
+                        self.findings[-1].confidence = confidence
+                    match_count += 1
+                    if max_matches > 0 and match_count >= max_matches:
+                        break
+            self._active_detector_name = previous_detector_name
 
     def _strip_comments(self, line: str) -> str:
         """Remove Clarity line comments from a source line."""
@@ -172,6 +515,14 @@ class ClarityScanner:
             end_line = j if j > i else i + 1
             yield func_name, start_line, end_line, block_lines
             i = max(j, i + 1)
+
+    def _extract_function_params(self, header_line: str) -> List[str]:
+        """Extract parameter names from a function declaration header line."""
+        code = self._strip_comments(header_line)
+        return [
+            match.group(1)
+            for match in re.finditer(r'\(([a-zA-Z0-9_-]+)\s+[^()]+\)', code)
+        ]
     
     def check_tx_sender_vs_contract_caller(self):
         """Detect authorization bypass via contract-caller misuse"""
@@ -1627,6 +1978,201 @@ class ClarityScanner:
                     'Data Integrity'
                 )
 
+    def check_unbounded_map_set_public(self):
+        """#61 Detect unbounded map-set usage in public functions (state bloat DoS)."""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            header = func_lines[0] if func_lines else ""
+            params = self._extract_function_params(header)
+            if not params:
+                continue
+
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if "map-set" not in code:
+                    continue
+
+                uses_user_input_key = any(re.search(rf"\b{re.escape(param)}\b", code) for param in params)
+                if not uses_user_input_key:
+                    continue
+
+                local_start = max(0, offset - 8)
+                local_context = "\n".join(func_lines[local_start:offset + 1]).lower()
+                has_bounds_or_existence_check = any(
+                    marker in local_context
+                    for marker in [
+                        "map-get?",
+                        "map-insert",
+                        "as-max-len?",
+                        "(len ",
+                        "max-",
+                        "limit",
+                        "quota",
+                        "asserts!",
+                    ]
+                )
+                if not has_bounds_or_existence_check:
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Unbounded map-set in Public Function '{func_name}'",
+                        "Public function writes user-controlled keys with map-set without clear "
+                        "existence/size bounds checks. Attackers can spam unique keys and bloat "
+                        "contract state, degrading performance and increasing long-term maintenance cost.",
+                        func_start + offset,
+                        line.strip()[:120],
+                        "Enforce key/value bounds and per-user quotas. Prefer map-insert with result "
+                        "checks, and gate writes with asserts! on size/usage limits.",
+                        "Denial of Service",
+                    )
+                    break
+
+    def check_missing_sip010_metadata_functions(self):
+        """#62 Detect FT contracts missing SIP-010 metadata functions."""
+        if "define-fungible-token" not in self.content and "ft-mint?" not in self.content:
+            return
+
+        defined_fns = set()
+        for func_name, _, _, _ in self._iter_function_blocks("public"):
+            defined_fns.add(func_name.lower())
+        for func_name, _, _, _ in self._iter_function_blocks("read-only"):
+            defined_fns.add(func_name.lower())
+
+        metadata_fns = ["get-symbol", "get-decimals"]
+        missing = [fn for fn in metadata_fns if fn not in defined_fns]
+        if missing:
+            self.add_finding(
+                Severity.MEDIUM,
+                "Missing SIP-010 Metadata Function(s)",
+                f"Fungible token contract is missing required metadata function(s): {', '.join(missing)}. "
+                "Wallets and indexers rely on these methods for token presentation and UX.",
+                1,
+                self.lines[0] if self.lines else "",
+                "Implement required SIP-010 metadata read-only functions for symbol and decimals.",
+                "Standards Compliance",
+            )
+
+    def check_unsafe_string_concat_without_length_check(self):
+        """#63 Detect concat usage without length guard."""
+        function_blocks = list(self._iter_function_blocks("public")) + list(self._iter_function_blocks("private"))
+        for func_name, func_start, _, func_lines in function_blocks:
+            for offset, line in enumerate(func_lines):
+                code = self._strip_comments(line)
+                if "(concat " not in code:
+                    continue
+
+                local_start = max(0, offset - 4)
+                local_end = min(len(func_lines), offset + 5)
+                local_context = "\n".join(func_lines[local_start:local_end]).lower()
+                has_length_check = any(
+                    marker in local_context
+                    for marker in ["as-max-len?", "(len ", "asserts! (<= ", "asserts! (< "]
+                )
+                if not has_length_check:
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        f"Unsafe String Concatenation in '{func_name}'",
+                        "String concatenation occurs without a preceding length guard. "
+                        "Unbounded concatenation can exceed size limits and cause runtime aborts.",
+                        func_start + offset,
+                        line.strip()[:120],
+                        "Validate combined length before concat, or wrap with as-max-len? and "
+                        "handle the none case explicitly.",
+                        "Input Validation",
+                    )
+
+    def check_governance_execution_without_timelock(self):
+        """#64 Detect governance execution paths with no timelock."""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            name_lower = func_name.lower()
+            if not any(token in name_lower for token in ["execute", "enact", "apply"]):
+                continue
+
+            func_body = "\n".join(func_lines)
+            func_body_lower = func_body.lower()
+            has_governance_context = any(
+                token in func_body_lower
+                for token in ["proposal", "govern", "vote", "quorum", "dao"]
+            ) or "proposal" in name_lower
+            if not has_governance_context:
+                continue
+
+            has_state_change = any(
+                op in func_body_lower
+                for op in ["var-set", "map-set", "map-insert", "map-delete", "stx-transfer?", "ft-transfer?"]
+            )
+            if not has_state_change:
+                continue
+
+            has_timelock_keyword = any(
+                token in func_body_lower
+                for token in [
+                    "timelock",
+                    "time-lock",
+                    "delay",
+                    "eta",
+                    "execute-after",
+                    "unlock-height",
+                    "ready-at",
+                ]
+            )
+            has_height_delay_check = (
+                any(token in func_body_lower for token in ["block-height", "burn-block-height", "tenure-height"])
+                and any(op in func_body_lower for op in [">=", "<=", ">", "<"])
+            )
+
+            if not has_timelock_keyword and not has_height_delay_check:
+                self.add_finding(
+                    Severity.CRITICAL,
+                    f"Governance Proposal Execution Without Timelock in '{func_name}'",
+                    "Governance action execution appears callable without a timelock delay. "
+                    "A compromised governance flow can execute malicious proposals immediately, "
+                    "leaving no defensive response window.",
+                    func_start,
+                    func_lines[0].strip()[:120] if func_lines else "",
+                    "Add explicit queue + timelock enforcement (eta/delay) before execution. "
+                    "Require block-height checks and immutable minimum delay constants.",
+                    "Governance",
+                )
+
+    def check_unvalidated_trait_parameter(self):
+        """#65 Detect public trait parameters used without validation."""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            header = func_lines[0] if func_lines else ""
+            trait_params = re.findall(r"\(([a-zA-Z0-9_-]+)\s+<[^>]+>\)", self._strip_comments(header))
+            if not trait_params:
+                continue
+
+            body = "\n".join(func_lines)
+            body_lower = body.lower()
+            for trait_param in trait_params:
+                trait_param_l = trait_param.lower()
+                is_used = re.search(rf"\b{re.escape(trait_param_l)}\b", body_lower)
+                if not is_used:
+                    continue
+
+                has_validation = any(
+                    re.search(pattern, body_lower)
+                    for pattern in [
+                        rf"is-eq\s+{re.escape(trait_param_l)}\b",
+                        rf"is-eq\s+\S+\s+{re.escape(trait_param_l)}\b",
+                        rf"asserts!\s*\([^)]*{re.escape(trait_param_l)}",
+                        rf"map-get\?\s+[^)\n]*{re.escape(trait_param_l)}",
+                        rf"allow[a-z0-9_-]*\s+[^)\n]*{re.escape(trait_param_l)}",
+                    ]
+                )
+                if not has_validation:
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Unvalidated Trait Parameter in Public Function '{func_name}'",
+                        "Public function accepts a trait-typed contract reference without allowlist "
+                        "or identity validation. Attackers can pass malicious trait implementors.",
+                        func_start,
+                        header.strip()[:120],
+                        "Validate trait parameters against approved principals before contract-call? "
+                        "or use static contract references for privileged flows.",
+                        "Trait Safety",
+                    )
+                    break
+
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
@@ -1756,12 +2302,12 @@ code{{color:#7dd3fc;font-size:.9rem}} .recommendation{{color:#86efac;font-style:
 <div class='summary'>{bars}</div>
 <h2>Findings</h2>
 {findings_html}
-<footer style='margin-top:2rem;color:#64748b;font-size:.85rem'>Generated by Clarity Shield v1.7.0</footer>
+<footer style='margin-top:2rem;color:#64748b;font-size:.85rem'>Generated by Clarity Shield v{VERSION}</footer>
 </body></html>"""
         return report
 
 
-def generate_sarif(all_findings: dict, tool_version: str = "1.0.0") -> str:
+def generate_sarif(all_findings: dict, tool_version: str = VERSION) -> str:
     """Generate SARIF 2.1.0 output for CI/CD integration (GitHub Code Scanning)"""
     rules = {}
     results = []
@@ -1822,6 +2368,55 @@ def collect_contracts(path: Path, recursive: bool = False) -> List[Path]:
     return []
 
 
+def print_summary_dashboard(all_findings: Dict[str, List[Finding]]) -> None:
+    """Print compact per-contract severity breakdown table."""
+    headers = ["Contract", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    rows: List[List[str]] = []
+    for contract_name in sorted(all_findings.keys()):
+        findings = all_findings[contract_name]
+        counts = {
+            severity: sum(1 for finding in findings if finding.severity == severity)
+            for severity in SEVERITY_ORDER
+        }
+        rows.append(
+            [
+                contract_name,
+                str(counts["CRITICAL"]),
+                str(counts["HIGH"]),
+                str(counts["MEDIUM"]),
+                str(counts["LOW"]),
+                str(counts["INFO"]),
+            ]
+        )
+
+    if not rows:
+        return
+
+    widths = []
+    for col_idx, header in enumerate(headers):
+        widths.append(max(len(header), *(len(row[col_idx]) for row in rows)))
+
+    def _hline(left: str, mid: str, right: str) -> str:
+        return left + mid.join("─" * (width + 2) for width in widths) + right
+
+    def _format_row(row: List[str]) -> str:
+        cells = []
+        for idx, value in enumerate(row):
+            if idx == 0:
+                cells.append(f" {value.ljust(widths[idx])} ")
+            else:
+                cells.append(f" {value.center(widths[idx])} ")
+        return "│" + "│".join(cells) + "│"
+
+    print("\n[+] Summary Dashboard")
+    print(_hline("┌", "┬", "┐"))
+    print(_format_row(headers))
+    print(_hline("├", "┼", "┤"))
+    for row in rows:
+        print(_format_row(row))
+    print(_hline("└", "┴", "┘"))
+
+
 def main():
     """CLI entry point"""
     import argparse
@@ -1839,9 +2434,28 @@ def main():
                         help="Print report to stdout instead of saving files")
     parser.add_argument("--severity", "-s", choices=["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"],
                         default=None, help="Minimum severity to report")
-    parser.add_argument("--version", action="version", version="clarity-shield 2.1.0")
+    parser.add_argument("--config", "-c",
+                        help="Path to config file (.toml/.yaml/.yml)")
+    parser.add_argument("--summary", action="store_true",
+                        help="Print compact summary dashboard table")
+    parser.add_argument("--version", action="version", version=f"clarity-shield {VERSION}")
 
     args = parser.parse_args()
+
+    try:
+        config = load_config(args.config)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+
+    scanner_cfg = config.get("scanner", {}) if isinstance(config.get("scanner", {}), dict) else {}
+    configured_default_severity = scanner_cfg.get("default_severity", config.get("default_severity"))
+    if configured_default_severity is not None:
+        try:
+            configured_default_severity = _normalize_severity(str(configured_default_severity))
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            sys.exit(1)
 
     target = Path(args.target)
     if not target.exists():
@@ -1853,25 +2467,25 @@ def main():
         print(f"Error: No .clar files found in '{args.target}'")
         sys.exit(1)
 
-    severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
-    min_idx = severity_order.index(args.severity) if args.severity else len(severity_order) - 1
+    effective_severity = args.severity or configured_default_severity
+    min_idx = SEVERITY_ORDER.index(effective_severity) if effective_severity else len(SEVERITY_ORDER) - 1
 
-    all_findings = {}
+    all_findings: Dict[str, List[Finding]] = {}
     total = 0
     worst_severity = None
 
     for contract_path in contracts:
-        scanner = ClarityScanner(str(contract_path))
+        scanner = ClarityScanner(str(contract_path), config=config)
         findings = scanner.scan()
 
         # Filter by severity
-        findings = [f for f in findings if severity_order.index(f.severity) <= min_idx]
+        findings = [f for f in findings if SEVERITY_ORDER.index(f.severity) <= min_idx]
         all_findings[scanner.contract_name] = findings
         total += len(findings)
 
         for f in findings:
-            idx = severity_order.index(f.severity)
-            if worst_severity is None or idx < severity_order.index(worst_severity):
+            idx = SEVERITY_ORDER.index(f.severity)
+            if worst_severity is None or idx < SEVERITY_ORDER.index(worst_severity):
                 worst_severity = f.severity
 
         if args.format != "sarif":
@@ -1883,7 +2497,7 @@ def main():
                 output_dir.mkdir(exist_ok=True)
                 ext = {'json': 'json', 'markdown': 'md', 'html': 'html'}.get(args.format, 'md')
                 output_file = output_dir / f"{scanner.contract_name}_report.{ext}"
-                with open(output_file, 'w') as fh:
+                with open(output_file, 'w', encoding="utf-8") as fh:
                     fh.write(report)
                 print(f"[+] Report saved to: {output_file}")
 
@@ -1895,9 +2509,12 @@ def main():
             output_dir = Path('findings')
             output_dir.mkdir(exist_ok=True)
             output_file = output_dir / "clarity-shield.sarif"
-            with open(output_file, 'w') as fh:
+            with open(output_file, 'w', encoding="utf-8") as fh:
                 fh.write(sarif_output)
             print(f"\n[+] SARIF report saved to: {output_file}")
+
+    if args.summary:
+        print_summary_dashboard(all_findings)
 
     print(f"\n[+] Total: {total} findings across {len(contracts)} contract(s)")
 

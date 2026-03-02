@@ -1,0 +1,30 @@
+# Clarity Shield scanner configuration (v2.2.0)
+# Use with: python3 src/scanner.py <target> --config clarity-shield.toml
+
+[scanner]
+# Default minimum severity when --severity is not passed
+# Allowed: CRITICAL, HIGH, MEDIUM, LOW, INFO
+default_severity = "LOW"
+
+# Optional allowlist: if set, only these detectors run
+# You can use numeric IDs or method names.
+# enable_detectors = [1, 2, 61, 64]
+
+# Optional blocklist: detectors to skip
+disable_detectors = []
+
+[severity_overrides]
+# Override severities by detector ID, detector method name, or exact finding title
+"61" = "HIGH"
+"64" = "CRITICAL"
+
+[[custom_rules]]
+id = "CUST-001"
+title = "Unsafe assert with user-controlled message"
+severity = "LOW"
+category = "Custom Policy"
+pattern = "\\(asserts!\\s+[^)]*message"
+description = "asserts! appears to include a user-influenced message payload."
+recommendation = "Prefer fixed error constants over dynamic messages in assertions."
+ignore_case = true
+max_matches = 2
