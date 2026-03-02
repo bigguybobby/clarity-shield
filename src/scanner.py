@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     tomllib = None  # type: ignore
 
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 
 
@@ -273,6 +273,11 @@ class ClarityScanner:
         (63, "check_unsafe_string_concat_without_length_check"),
         (64, "check_governance_execution_without_timelock"),
         (65, "check_unvalidated_trait_parameter"),
+        (66, "check_post_condition_missing"),
+        (67, "check_reentrancy_via_dynamic_dispatch"),
+        (68, "check_sip009_royalty_bypass"),
+        (69, "check_flash_loan_callback_unguarded"),
+        (70, "check_time_based_unlock_manipulation"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2173,6 +2178,265 @@ class ClarityScanner:
                     )
                     break
 
+
+
+    def check_fee_manipulation(self):
+        """Detect mutable fee parameters without caps or timelocks"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'define-data-var\s+(fee|fee-rate|fee-bps|swap-fee|protocol-fee)', code):
+                has_cap = any(
+                    re.search(r'(max-fee|fee-cap|fee-limit|<=.*fee|asserts!.*fee)', self._strip_comments(l))
+                    for l in self.lines
+                )
+                if not has_cap:
+                    self.add_finding(
+                        Severity.HIGH,
+                        'Uncapped Fee Parameter — Rug Vector',
+                        'Mutable fee variable with no upper bound. Admin can set fee to 100% and drain user funds.',
+                        i + 1, code.strip()[:80],
+                        'Add a maximum fee cap (e.g., asserts! (<= new-fee u1000)) and consider a timelock.',
+                        'Economic'
+                    )
+                break
+
+    def check_deadline_missing_in_swap(self):
+        """Detect swap/trade functions without deadline/expiry parameters"""
+        in_swap_fn = False
+        swap_line = 0
+        swap_snippet = ""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'define-public\s+\((swap|trade|exchange|execute-swap)', code):
+                in_swap_fn = True
+                swap_line = i + 1
+                swap_snippet = code.strip()[:80]
+            if in_swap_fn and re.search(r'(deadline|expiry|expires-at|valid-until|block-height)', code):
+                in_swap_fn = False
+            if in_swap_fn and re.search(r'^\s*\)\s*$', code):
+                self.add_finding(
+                    Severity.MEDIUM,
+                    'Missing Deadline in Swap Function',
+                    'Swap function has no deadline/expiry parameter — transactions can be held and executed at unfavorable prices.',
+                    swap_line, swap_snippet,
+                    'Add a deadline parameter and check (asserts! (<= block-height deadline)).',
+                    'MEV'
+                )
+                in_swap_fn = False
+
+    def check_integer_truncation_division(self):
+        """Detect division before multiplication (precision loss)"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(\*\s+\(/\s+', code):
+                self.add_finding(
+                    Severity.MEDIUM,
+                    'Division Before Multiplication — Precision Loss',
+                    'Division performed before multiplication can silently truncate to zero in integer arithmetic.',
+                    i + 1, code.strip()[:80],
+                    'Reorder to multiply first, then divide: (* a c) / b.',
+                    'Arithmetic'
+                )
+
+    def check_map_insert_without_existence_check(self):
+        """Detect map-insert that could silently fail if key exists"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            if re.search(r'\(map-insert\s+', code):
+                context_start = max(0, i - 3)
+                context = ' '.join(self._strip_comments(l) for l in self.lines[context_start:i+2])
+                if not re.search(r'(unwrap!|try!|asserts!|match|if\s+\(map-insert)', context):
+                    self.add_finding(
+                        Severity.MEDIUM,
+                        'Unchecked map-insert — Silent Failure',
+                        'map-insert returns false if key already exists, but result is not checked. Data may silently not be written.',
+                        i + 1, code.strip()[:80],
+                        'Use (asserts! (map-insert ...) (err ...)) or check the boolean return value.',
+                        'Data Integrity'
+                    )
+
+    def check_stx_transfer_to_variable_recipient(self):
+        """Detect STX transfers where recipient comes from a data-var (admin-controlled drain)"""
+        for i, line in enumerate(self.lines):
+            code = self._strip_comments(line)
+            m = re.search(r'\(stx-transfer\?\s+\S+\s+\S+\s+\(var-get\s+(\S+)\)', code)
+            if m:
+                var_name = m.group(1)
+                is_settable = any(
+                    re.search(rf'var-set\s+{re.escape(var_name)}', self._strip_comments(l))
+                    for l in self.lines
+                )
+                if is_settable:
+                    self.add_finding(
+                        Severity.HIGH,
+                        'STX Transfer to Admin-Controlled Recipient',
+                        f'STX transferred to variable "{var_name}" which can be changed by admin. Potential drain vector.',
+                        i + 1, code.strip()[:80],
+                        'Use a hardcoded treasury address or require multisig approval for recipient changes.',
+                        'Rug Pull'
+                    )
+    def check_post_condition_missing(self):
+        """#66 Detect public functions with asset transfers but no post-conditions."""
+        transfer_patterns = [r"stx-transfer\?", r"nft-transfer\?", r"ft-transfer\?"]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            body = "\n".join(func_lines)
+            body_stripped = self._strip_comments(body)
+            has_transfer = any(re.search(p, body_stripped) for p in transfer_patterns)
+            if not has_transfer:
+                continue
+            # Check for post-condition annotations in comments
+            has_post_condition = any(
+                re.search(pattern, body, re.IGNORECASE)
+                for pattern in [
+                    r";;\s*post-condition",
+                    r";;\s*@post",
+                    r"post-conditions",
+                ]
+            )
+            if not has_post_condition:
+                self.add_finding(
+                    Severity.MEDIUM,
+                    f"Missing Post-Condition Annotation in '{func_name}'",
+                    "Public function performs asset transfers (STX/NFT/FT) without "
+                    "documented post-conditions. Stacks post-conditions are a critical "
+                    "safety mechanism that should be explicitly specified.",
+                    func_start,
+                    body_stripped.split("\n")[0].strip()[:120],
+                    "Add post-condition annotations (;; @post-condition) and ensure "
+                    "callers attach appropriate post-conditions to transactions.",
+                    "Post-Conditions",
+                )
+
+    def check_reentrancy_via_dynamic_dispatch(self):
+        """#67 Detect contract-call? with variable/parameter contract references."""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            body = "\n".join(func_lines)
+            body_stripped = self._strip_comments(body)
+            # contract-call? with a variable ref (not a literal .contract-name)
+            matches = re.finditer(
+                r"contract-call\?\s+([a-zA-Z0-9_-]+)\s+",
+                body_stripped,
+            )
+            for m in matches:
+                target = m.group(1)
+                # Literal contract refs start with . or ' — variables don't
+                if not target.startswith(".") and not target.startswith("'"):
+                    line_offset = body_stripped[: m.start()].count("\n")
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Dynamic Dispatch in contract-call? in '{func_name}'",
+                        f"contract-call? uses variable '{target}' as contract reference "
+                        "instead of a literal. This enables reentrancy-like attacks where "
+                        "an attacker passes a malicious contract implementing the expected trait.",
+                        func_start + line_offset,
+                        m.group(0).strip()[:120],
+                        "Use static contract references (e.g., .my-contract) or validate "
+                        "the contract parameter against an allowlist of approved addresses.",
+                        "Reentrancy",
+                    )
+
+    def check_sip009_royalty_bypass(self):
+        """#68 Detect NFT marketplace patterns where royalty payment can be skipped."""
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            body = "\n".join(func_lines)
+            body_stripped = self._strip_comments(body).lower()
+            # Look for marketplace-like functions
+            is_marketplace = any(
+                kw in func_name.lower()
+                for kw in ["list", "buy", "sell", "purchase", "trade", "marketplace"]
+            )
+            if not is_marketplace:
+                continue
+            has_nft_transfer = "nft-transfer?" in body_stripped
+            has_royalty = any(
+                kw in body_stripped
+                for kw in ["royalt", "creator-fee", "artist-fee", "commission"]
+            )
+            if has_nft_transfer and not has_royalty:
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Potential Royalty Bypass in NFT Function '{func_name}'",
+                    "NFT marketplace function transfers NFTs without apparent royalty/commission "
+                    "payment logic. This allows sellers to bypass creator royalties, violating "
+                    "SIP-009 marketplace best practices.",
+                    func_start,
+                    func_lines[0].strip()[:120] if func_lines else "",
+                    "Implement mandatory royalty payment (e.g., percentage of sale price sent "
+                    "to the original creator) before completing the NFT transfer.",
+                    "NFT Safety",
+                )
+
+    def check_flash_loan_callback_unguarded(self):
+        """#69 Detect flash loan callback functions without sender verification."""
+        flash_patterns = [
+            r"on-flash-loan", r"flash-callback", r"execute-flash",
+            r"flash-loan-callback", r"on-loan-received",
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            is_flash_callback = any(
+                re.search(p, func_name, re.IGNORECASE) for p in flash_patterns
+            )
+            if not is_flash_callback:
+                continue
+            body = "\n".join(func_lines)
+            body_stripped = self._strip_comments(body).lower()
+            has_sender_check = any(
+                pattern in body_stripped
+                for pattern in [
+                    "is-eq contract-caller",
+                    "is-eq tx-sender",
+                    "asserts!",
+                    "lending-pool",
+                    "flash-lender",
+                ]
+            )
+            if not has_sender_check:
+                self.add_finding(
+                    Severity.CRITICAL,
+                    f"Unguarded Flash Loan Callback '{func_name}'",
+                    "Flash loan callback function lacks sender verification. Anyone can "
+                    "call this function directly, potentially manipulating contract state "
+                    "outside the intended flash loan flow.",
+                    func_start,
+                    func_lines[0].strip()[:120] if func_lines else "",
+                    "Verify that contract-caller is the expected lending pool contract. "
+                    "Use (asserts! (is-eq contract-caller .lending-pool) (err ...)).",
+                    "Flash Loan Safety",
+                )
+
+    def check_time_based_unlock_manipulation(self):
+        """#70 Detect time-sensitive operations using block-height without delta checks."""
+        time_keywords = [
+            "unlock", "vest", "release", "expire", "deadline", "mature", "lock-until",
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks("public"):
+            body = "\n".join(func_lines)
+            body_stripped = self._strip_comments(body).lower()
+            is_time_sensitive = any(kw in func_name.lower() or kw in body_stripped for kw in time_keywords)
+            if not is_time_sensitive:
+                continue
+            uses_block_height = "block-height" in body_stripped
+            if not uses_block_height:
+                continue
+            # Check for proper comparison (>= or > with a stored/calculated value)
+            has_safe_comparison = re.search(
+                r"(?:>=|>|is-eq)\s+block-height\s+\S+|(?:>=|>|is-eq)\s+\S+\s+block-height",
+                body_stripped,
+            )
+            if not has_safe_comparison:
+                self.add_finding(
+                    Severity.MEDIUM,
+                    f"Unsafe Block-Height Time Check in '{func_name}'",
+                    "Time-sensitive function references block-height without a clear "
+                    "comparison against a stored unlock/deadline value. Block-height can "
+                    "be manipulated by miners within small windows.",
+                    func_start,
+                    func_lines[0].strip()[:120] if func_lines else "",
+                    "Store the target block-height in a data-var and use explicit "
+                    "(>= block-height target-height) comparisons. Consider adding "
+                    "a minimum block delta for safety.",
+                    "Time Safety",
+                )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:

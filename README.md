@@ -20,7 +20,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
 
 ## ✨ Features
 
-- 🔍 **65 Vulnerability Detectors**:
+- 🔍 **70 Vulnerability Detectors**:
   - Authorization bypass via `contract-caller` misuse
   - Missing access control checks on public functions
   - Unsafe `unwrap!` / `unwrap-panic` usage (DoS vectors)
