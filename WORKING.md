@@ -1,10 +1,12 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 26 (all passing)
+**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 39 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
 ## Latest Changes (2026-03-09)
+- ✅ Added 13 CLI integration tests: --help, --version, error handling, JSON/SARIF/Markdown output, severity filter, exit codes, directory scan
+- Test suite: 26 → 39 tests, all passing
 - ✅ Committed pending look-ahead bleed fix (was blocked by Xcode license)
 - ✅ Added 6 SARIF output tests: valid JSON, schema/version, tool info, results mapping, empty findings, severity mapping
 - ✅ Added GitHub Actions CI workflow (`.github/workflows/ci.yml`) — runs pytest on Python 3.10/3.11/3.12 + CLI smoke test
@@ -39,6 +41,6 @@
 3. ~~Add GitHub Actions CI workflow~~ ✅ DONE
 4. More detector-specific regression tests (e.g., reentrancy, integer overflow)
 5. ~~README badges~~ ✅ DONE
-6. Add CLI integration test (--help, --version flags)
+6. ~~Add CLI integration test (--help, --version flags)~~ ✅ DONE
 7. Config file (TOML) test coverage
 8. git push (needs Xcode license fix or GitHub token auth)
