@@ -299,3 +299,59 @@ class TestRepoContracts:
             scanner = ClarityScanner(str(clar_file))
             findings = scanner.scan()
             assert len(findings) > 0, f"No findings for {clar_file.name}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: look-ahead bleed across function boundaries (#29, #34)
+# ---------------------------------------------------------------------------
+
+class TestLookAheadBleedFix:
+    """
+    Detectors 29 (unprotected mint) and 34 (unprotected burn) previously used
+    a 15-line raw look-ahead that could bleed into the next function, causing
+    false negatives when the adjacent function had auth checks.
+    """
+
+    BLEED_CONTRACT = Path(__file__).resolve().parent.parent / "test-contracts" / "bleed-test.clar"
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parent.parent / "test-contracts" / "bleed-test.clar").is_file(),
+        reason="bleed-test.clar not found"
+    )
+    def test_unprotected_mint_detected_despite_adjacent_auth(self):
+        """Unprotected mint must be flagged even when the next function has auth."""
+        scanner = ClarityScanner(str(self.BLEED_CONTRACT))
+        scanner.scan()
+        titles = [f.title for f in scanner.findings]
+        assert "Unprotected Mint Function" in titles, (
+            "False negative: unprotected mint-public not detected (look-ahead bleed)"
+        )
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parent.parent / "test-contracts" / "bleed-test.clar").is_file(),
+        reason="bleed-test.clar not found"
+    )
+    def test_unprotected_burn_detected_despite_adjacent_auth(self):
+        """Unprotected burn must be flagged even when the next function has auth."""
+        scanner = ClarityScanner(str(self.BLEED_CONTRACT))
+        scanner.scan()
+        titles = [f.title for f in scanner.findings]
+        assert "Unprotected Burn Function" in titles, (
+            "False negative: unprotected burn-public not detected (look-ahead bleed)"
+        )
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parent.parent / "test-contracts" / "bleed-test.clar").is_file(),
+        reason="bleed-test.clar not found"
+    )
+    def test_protected_functions_not_flagged(self):
+        """admin-transfer and admin-burn have auth — must NOT be flagged as unprotected."""
+        scanner = ClarityScanner(str(self.BLEED_CONTRACT))
+        scanner.scan()
+        unprotected = [f for f in scanner.findings if f.title in (
+            "Unprotected Mint Function", "Unprotected Burn Function"
+        )]
+        flagged_lines = {f.line for f in unprotected}
+        # admin-transfer is at line 17, admin-burn at line 27 — neither should be flagged
+        assert 17 not in flagged_lines, "False positive: admin-transfer flagged as unprotected"
+        assert 27 not in flagged_lines, "False positive: admin-burn flagged as unprotected"

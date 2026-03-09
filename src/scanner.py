@@ -1301,21 +1301,22 @@ class ClarityScanner:
 
     def check_unprotected_mint(self):
         """Detect mint functions without authorization checks"""
-        for i, line in enumerate(self.lines, 1):
-            code = self._strip_comments(line)
-            if re.search(r'\(define-public\s+\((mint|ft-mint|nft-mint)', code):
-                # Look ahead for auth check
-                context = ' '.join(self._strip_comments(l) for l in self.lines[i-1:min(i+15, len(self.lines))])
-                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender|asserts!\s*\(\s*is-(owner|admin|authorized|protocol|minter))', context):
-                    self.add_finding(
-                        Severity.CRITICAL,
-                        'Unprotected Mint Function',
-                        'A public mint function lacks authorization checks. Anyone can call '
-                        'this function to mint tokens, potentially causing unlimited inflation.',
-                        i, line,
-                        'Add authorization: (asserts! (is-eq contract-caller CONTRACT-OWNER) ERR_UNAUTHORIZED)',
-                        'Access Control'
-                    )
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            header = self._strip_comments(func_lines[0])
+            if not re.search(r'\(define-public\s+\((mint|ft-mint|nft-mint)', header):
+                continue
+            # Search only within this function's body (no cross-function bleed)
+            context = ' '.join(self._strip_comments(l) for l in func_lines)
+            if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender|asserts!\s*\(\s*is-(owner|admin|authorized|protocol|minter))', context):
+                self.add_finding(
+                    Severity.CRITICAL,
+                    'Unprotected Mint Function',
+                    'A public mint function lacks authorization checks. Anyone can call '
+                    'this function to mint tokens, potentially causing unlimited inflation.',
+                    func_start, func_lines[0],
+                    'Add authorization: (asserts! (is-eq contract-caller CONTRACT-OWNER) ERR_UNAUTHORIZED)',
+                    'Access Control'
+                )
 
     def check_price_oracle_manipulation(self):
         """Detect reliance on single price sources without validation"""
@@ -1415,22 +1416,23 @@ class ClarityScanner:
 
     def check_unprotected_burn(self):
         """Detect burn functions without authorization checks"""
-        for i, line in enumerate(self.lines, 1):
-            code = self._strip_comments(line)
-            if re.search(r'\(define-public\s+\((burn|ft-burn|nft-burn)', code):
-                # Look ahead for auth check
-                context = ' '.join(self._strip_comments(l) for l in self.lines[i-1:min(i+15, len(self.lines))])
-                if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender|asserts!\s*\(\s*is-(owner|admin|authorized|protocol|minter))', context):
-                    self.add_finding(
-                        Severity.HIGH,
-                        'Unprotected Burn Function',
-                        'A public burn function lacks authorization checks. Anyone can call '
-                        'this function to burn tokens, potentially destroying user assets without permission.',
-                        i, line,
-                        'Add authorization to verify that only the token owner or an authorized '
-                        'party can burn tokens: (asserts! (is-eq tx-sender token-owner) ERR_UNAUTHORIZED)',
-                        'Access Control'
-                    )
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            header = self._strip_comments(func_lines[0])
+            if not re.search(r'\(define-public\s+\((burn|ft-burn|nft-burn)', header):
+                continue
+            # Search only within this function's body (no cross-function bleed)
+            context = ' '.join(self._strip_comments(l) for l in func_lines)
+            if not re.search(r'(is-eq\s+(contract-caller|tx-sender)|asserts!.*contract-caller|asserts!.*tx-sender|asserts!\s*\(\s*is-(owner|admin|authorized|protocol|minter))', context):
+                self.add_finding(
+                    Severity.HIGH,
+                    'Unprotected Burn Function',
+                    'A public burn function lacks authorization checks. Anyone can call '
+                    'this function to burn tokens, potentially destroying user assets without permission.',
+                    func_start, func_lines[0],
+                    'Add authorization to verify that only the token owner or an authorized '
+                    'party can burn tokens: (asserts! (is-eq tx-sender token-owner) ERR_UNAUTHORIZED)',
+                    'Access Control'
+                )
 
 
     def check_unsafe_fold_accumulator(self):
