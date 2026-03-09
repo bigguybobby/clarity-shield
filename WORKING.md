@@ -1,10 +1,13 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 39 (all passing)
+**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 47 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
 ## Latest Changes (2026-03-09)
+- ✅ Added 8 detector regression tests: reentrancy #13, arithmetic #3, auth #4, DoS #38
+- New test-contracts/detector-regression.clar with positive + negative cases
+- Test suite: 39 → 47 tests, all passing
 - ✅ Added 13 CLI integration tests: --help, --version, error handling, JSON/SARIF/Markdown output, severity filter, exit codes, directory scan
 - Test suite: 26 → 39 tests, all passing
 - ✅ Committed pending look-ahead bleed fix (was blocked by Xcode license)
@@ -39,7 +42,7 @@
 1. ~~Fix look-ahead bleeding across function boundaries in detectors 29/34~~ ✅ DONE
 2. ~~Add SARIF output test~~ ✅ DONE
 3. ~~Add GitHub Actions CI workflow~~ ✅ DONE
-4. More detector-specific regression tests (e.g., reentrancy, integer overflow)
+4. ~~More detector-specific regression tests~~ ✅ DONE (reentrancy, arithmetic, auth, DoS)
 5. ~~README badges~~ ✅ DONE
 6. ~~Add CLI integration test (--help, --version flags)~~ ✅ DONE
 7. Config file (TOML) test coverage
