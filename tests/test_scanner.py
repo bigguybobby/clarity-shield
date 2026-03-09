@@ -438,3 +438,138 @@ class TestSARIFOutput:
             expected = severity_map.get(f.severity, "warning")
             assert r["level"] == expected, \
                 f"Severity {f.severity} should map to '{expected}', got '{r['level']}'"
+
+
+# ---------------------------------------------------------------------------
+# Detector-specific regression tests (#3, #4, #13, #38)
+# ---------------------------------------------------------------------------
+
+class TestReentrancyDetector:
+    """Detector #13: State changes after external contract calls."""
+
+    REGRESSION_CONTRACT = Path(__file__).resolve().parent.parent / "test-contracts" / "detector-regression.clar"
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parent.parent / "test-contracts" / "detector-regression.clar").is_file(),
+        reason="detector-regression.clar not found"
+    )
+    def test_flags_state_change_after_contract_call(self):
+        """map-set after contract-call? in withdraw-unsafe must trigger reentrancy finding."""
+        scanner = ClarityScanner(str(self.REGRESSION_CONTRACT))
+        scanner.scan()
+        reentrancy = [f for f in scanner.findings if "reentrancy" in f.title.lower() or "state change after" in f.title.lower()]
+        unsafe_hits = [f for f in reentrancy if "withdraw-unsafe" in f.title]
+        assert len(unsafe_hits) > 0, "Reentrancy detector missed state change after contract-call? in withdraw-unsafe"
+
+    @pytest.mark.skipif(
+        not (Path(__file__).resolve().parent.parent / "test-contracts" / "detector-regression.clar").is_file(),
+        reason="detector-regression.clar not found"
+    )
+    def test_no_flag_state_change_before_contract_call(self):
+        """map-set before contract-call? in withdraw-safe should NOT trigger reentrancy."""
+        scanner = ClarityScanner(str(self.REGRESSION_CONTRACT))
+        scanner.scan()
+        reentrancy = [f for f in scanner.findings if "reentrancy" in f.title.lower() or "state change after" in f.title.lower()]
+        safe_hits = [f for f in reentrancy if "withdraw-safe" in f.title]
+        assert len(safe_hits) == 0, "False positive: withdraw-safe flagged for reentrancy despite correct ordering"
+
+
+class TestArithmeticSafetyDetector:
+    """Detector #3: Unchecked arithmetic on uint values."""
+
+    def test_flags_unchecked_uint_arithmetic(self, tmp_contract):
+        """Arithmetic on uint without bounds check should trigger."""
+        code = """\
+(define-public (add-amounts (a uint) (b uint))
+  (ok (+ a uint b uint)))
+"""
+        path = tmp_contract(code)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        overflow = [f for f in findings if "overflow" in f.title.lower() or "arithmetic" in f.title.lower()]
+        assert len(overflow) > 0, "Arithmetic safety detector missed unchecked uint addition"
+
+    def test_no_flag_checked_arithmetic(self, tmp_contract):
+        """Arithmetic with asserts! bounds check should NOT trigger."""
+        code = """\
+(define-public (add-safe (a uint) (b uint))
+  (begin
+    (asserts! (<= (+ a b) u1000000) (err u500))
+    (ok (+ a b))))
+"""
+        path = tmp_contract(code)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        overflow = [f for f in findings if "overflow" in f.title.lower() or "arithmetic" in f.title.lower()]
+        assert len(overflow) == 0, "False positive: checked arithmetic flagged as unsafe"
+
+
+class TestPublicFunctionAuthDetector:
+    """Detector #4: Missing auth checks in sensitive public functions."""
+
+    def test_flags_unprotected_admin_setter(self, tmp_contract):
+        """Public set-* function with var-set and no auth should trigger."""
+        code = """\
+(define-data-var fee-rate uint u100)
+(define-public (set-fee-rate (new-rate uint))
+  (begin
+    (var-set fee-rate new-rate)
+    (ok true)))
+"""
+        path = tmp_contract(code)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        auth_missing = [f for f in findings if "authorization" in f.title.lower() or "missing auth" in f.title.lower()]
+        assert len(auth_missing) > 0, "Auth detector missed unprotected set-fee-rate"
+
+    def test_no_flag_protected_admin_setter(self, tmp_contract):
+        """Public admin function with tx-sender check should NOT trigger."""
+        code = """\
+(define-data-var admin principal tx-sender)
+(define-data-var fee-rate uint u100)
+(define-public (admin-set-fee (new-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender (var-get admin)) (err u401))
+    (var-set fee-rate new-rate)
+    (ok true)))
+"""
+        path = tmp_contract(code)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        auth_missing = [f for f in findings if "authorization" in f.title.lower() and "admin-set-fee" in f.title.lower()]
+        assert len(auth_missing) == 0, "False positive: protected admin function flagged as missing auth"
+
+
+class TestDoSDetector:
+    """Detector #38: External calls inside loops (DoS vector)."""
+
+    def test_flags_external_call_in_fold(self, tmp_contract):
+        """stx-transfer? inside fold should trigger DoS warning."""
+        code = """\
+(define-public (distribute (recipients (list 200 principal)))
+  (begin
+    (fold send-one recipients u0)
+    (ok true)))
+
+(define-private (send-one (recipient principal) (idx uint))
+  (begin
+    (unwrap-panic (stx-transfer? u100 tx-sender recipient))
+    (+ idx u1)))
+"""
+        path = tmp_contract(code)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        dos = [f for f in findings if "denial of service" in f.title.lower() or "loop" in f.title.lower()]
+        assert len(dos) > 0, "DoS detector missed external call in fold"
+
+    def test_no_flag_fold_without_external_call(self, tmp_contract):
+        """Pure computation in fold should NOT trigger DoS warning."""
+        code = """\
+(define-public (sum-list (values (list 200 uint)))
+  (ok (fold + values u0)))
+"""
+        path = tmp_contract(code)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        dos = [f for f in findings if "denial of service" in f.title.lower()]
+        assert len(dos) == 0, "False positive: pure fold flagged as DoS"
