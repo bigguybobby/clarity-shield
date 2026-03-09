@@ -355,3 +355,86 @@ class TestLookAheadBleedFix:
         # admin-transfer is at line 17, admin-burn at line 27 — neither should be flagged
         assert 17 not in flagged_lines, "False positive: admin-transfer flagged as unprotected"
         assert 27 not in flagged_lines, "False positive: admin-burn flagged as unprotected"
+
+
+# ---------------------------------------------------------------------------
+# SARIF output format validation
+# ---------------------------------------------------------------------------
+
+class TestSARIFOutput:
+    """Validate SARIF 2.1.0 output structure for GitHub Code Scanning integration."""
+
+    def test_sarif_valid_json(self, tmp_contract):
+        """SARIF output must be valid JSON."""
+        from scanner import generate_sarif
+        path = tmp_contract(VULNERABLE_CONTRACT)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        sarif_str = generate_sarif({"test-contract": findings})
+        sarif = json.loads(sarif_str)
+        assert isinstance(sarif, dict)
+
+    def test_sarif_schema_and_version(self, tmp_contract):
+        """SARIF must declare schema and version 2.1.0."""
+        from scanner import generate_sarif
+        path = tmp_contract(VULNERABLE_CONTRACT)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        sarif = json.loads(generate_sarif({"test-contract": findings}))
+        assert sarif["version"] == "2.1.0"
+        assert "$schema" in sarif
+        assert "sarif-schema-2.1.0" in sarif["$schema"]
+
+    def test_sarif_has_runs_with_tool(self, tmp_contract):
+        """SARIF must have runs[] with tool driver info."""
+        from scanner import generate_sarif
+        path = tmp_contract(VULNERABLE_CONTRACT)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        sarif = json.loads(generate_sarif({"test-contract": findings}))
+        assert len(sarif["runs"]) == 1
+        run = sarif["runs"][0]
+        assert run["tool"]["driver"]["name"] == "Clarity Shield"
+        assert "version" in run["tool"]["driver"]
+        assert "rules" in run["tool"]["driver"]
+
+    def test_sarif_results_match_findings(self, tmp_contract):
+        """Each finding should produce a SARIF result with correct fields."""
+        from scanner import generate_sarif
+        path = tmp_contract(VULNERABLE_CONTRACT)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        sarif = json.loads(generate_sarif({"test-contract": findings}))
+        results = sarif["runs"][0]["results"]
+        assert len(results) == len(findings)
+        for r in results:
+            assert "ruleId" in r
+            assert r["level"] in ("error", "warning", "note")
+            assert "message" in r
+            assert "locations" in r
+            loc = r["locations"][0]["physicalLocation"]
+            assert "artifactLocation" in loc
+            assert "region" in loc
+            assert "startLine" in loc["region"]
+
+    def test_sarif_empty_findings(self):
+        """SARIF with no findings should still be valid."""
+        from scanner import generate_sarif
+        sarif = json.loads(generate_sarif({}))
+        assert sarif["runs"][0]["results"] == []
+        assert sarif["runs"][0]["tool"]["driver"]["rules"] == []
+
+    def test_sarif_severity_mapping(self, tmp_contract):
+        """CRITICAL/HIGH → error, MEDIUM → warning, LOW/INFO → note."""
+        from scanner import generate_sarif
+        path = tmp_contract(VULNERABLE_CONTRACT)
+        scanner = ClarityScanner(path)
+        findings = scanner.scan()
+        sarif = json.loads(generate_sarif({"test-contract": findings}))
+        results = sarif["runs"][0]["results"]
+        severity_map = {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning",
+                        "LOW": "note", "INFO": "note"}
+        for r, f in zip(results, findings):
+            expected = severity_map.get(f.severity, "warning")
+            assert r["level"] == expected, \
+                f"Severity {f.severity} should map to '{expected}', got '{r['level']}'"
