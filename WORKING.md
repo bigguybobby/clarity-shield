@@ -1,29 +1,29 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 20 (all passing)
+**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 26 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-08)
+## Latest Changes (2026-03-09)
+- ✅ Committed pending look-ahead bleed fix (was blocked by Xcode license)
+- ✅ Added 6 SARIF output tests: valid JSON, schema/version, tool info, results mapping, empty findings, severity mapping
+- ✅ Added GitHub Actions CI workflow (`.github/workflows/ci.yml`) — runs pytest on Python 3.10/3.11/3.12 + CLI smoke test
+- ✅ Added README badges: Tests CI status, Detectors count
+- Test suite: 20 → 26 tests, all passing
+- Git: Xcode license still not accepted — using `/Library/Developer/CommandLineTools/usr/bin/git` as workaround
+
+## Previous Changes (2026-03-08)
 - ✅ Fixed look-ahead bleed across function boundaries in detectors #29 and #34
   - `check_unprotected_mint` and `check_unprotected_burn` now use `_iter_function_blocks()`
-  - Previously: 15-line raw look-ahead could see auth checks in adjacent functions → false negatives
-  - Now: context is strictly bounded by paren-balanced function boundaries
-  - Added `test-contracts/bleed-test.clar` regression contract
-  - Added 3 new tests: TestLookAheadBleedFix (mint detected, burn detected, protected not flagged)
-  - Test suite: 17 → 20 tests, all passing
-- ⚠️ PENDING GIT COMMIT — Xcode license not accepted, `git` blocked. Need `sudo xcodebuild -license accept`
+  - Added `test-contracts/bleed-test.clar` regression contract + 3 tests
 
 ## Previous Changes (2026-03-02)
 - ✅ Added pytest test suite: 17 tests covering core scanner, 5 individual detectors, output formats, repo contracts
 - ✅ Fixed false positive in `check_unprotected_mint` (#29) and `check_unprotected_burn` (#34)
-  - Now recognises indirect auth guards: `is-owner`, `is-admin`, `is-authorized`, `is-protocol`, `is-minter`
-  - safe-token.clar: reduced from 10 → 9 findings (eliminated false "Unprotected Mint")
 
 ## Known Issues
-- ⚠️ Xcode license not accepted — git commands fail. Run: `sudo xcodebuild -license accept`
+- ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 - Scanner prints `[*]` status lines to stdout mixed with JSON output (cosmetic)
-- safe-token still gets 9 findings (some are INFO/LOW style suggestions, not bugs)
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~2795 lines)
@@ -31,10 +31,14 @@
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
 - Test contracts: 18 files in `test-contracts/`
+- CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
 1. ~~Fix look-ahead bleeding across function boundaries in detectors 29/34~~ ✅ DONE
-2. Add SARIF output test
-3. Add GitHub Actions CI workflow
-4. More detector-specific regression tests
-5. README badges (tests passing, version, license)
+2. ~~Add SARIF output test~~ ✅ DONE
+3. ~~Add GitHub Actions CI workflow~~ ✅ DONE
+4. More detector-specific regression tests (e.g., reentrancy, integer overflow)
+5. ~~README badges~~ ✅ DONE
+6. Add CLI integration test (--help, --version flags)
+7. Config file (TOML) test coverage
+8. git push (needs Xcode license fix or GitHub token auth)
