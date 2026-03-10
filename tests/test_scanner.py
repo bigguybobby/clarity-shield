@@ -573,3 +573,37 @@ class TestDoSDetector:
         findings = scanner.scan()
         dos = [f for f in findings if "denial of service" in f.title.lower()]
         assert len(dos) == 0, "False positive: pure fold flagged as DoS"
+
+
+class TestCodeQuality:
+    """Meta-tests to catch code quality regressions in scanner.py"""
+
+    def test_no_duplicate_method_definitions(self):
+        """Ensure no methods are defined twice in ClarityScanner (Python silently uses the last)"""
+        import re
+        from pathlib import Path
+        scanner_path = Path(__file__).parent.parent / "src" / "scanner.py"
+        content = scanner_path.read_text()
+        # Find all method defs at class level (4-space indent)
+        methods = re.findall(r'^    def (\w+)\(', content, re.MULTILINE)
+        seen = {}
+        duplicates = []
+        for m in methods:
+            if m in seen:
+                duplicates.append(m)
+            seen[m] = True
+        assert duplicates == [], f"Duplicate method definitions found in scanner.py: {duplicates}"
+
+    def test_all_detector_specs_have_methods(self):
+        """Every detector in DETECTOR_SPECS must have a corresponding method"""
+        from src.scanner import ClarityScanner
+        for detector_id, method_name in ClarityScanner.DETECTOR_SPECS:
+            assert hasattr(ClarityScanner, method_name), \
+                f"Detector #{detector_id} references missing method '{method_name}'"
+
+    def test_detector_ids_are_unique(self):
+        """All detector IDs in DETECTOR_SPECS must be unique"""
+        from src.scanner import ClarityScanner
+        ids = [d[0] for d in ClarityScanner.DETECTOR_SPECS]
+        assert len(ids) == len(set(ids)), \
+            f"Duplicate detector IDs: {[x for x in ids if ids.count(x) > 1]}"
