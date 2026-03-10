@@ -1,10 +1,15 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 47 (all passing)
+**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 69 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-09)
+## Latest Changes (2026-03-10)
+- ✅ Added 22 config tests: TOML/YAML loading, enable/disable detectors, severity overrides, custom rules
+- New tests/test_config.py covering all config subsystems
+- Test suite: 47 → 69 tests, all passing
+
+## Previous Changes (2026-03-09)
 - ✅ Added 8 detector regression tests: reentrancy #13, arithmetic #3, auth #4, DoS #38
 - New test-contracts/detector-regression.clar with positive + negative cases
 - Test suite: 39 → 47 tests, all passing
@@ -45,5 +50,5 @@
 4. ~~More detector-specific regression tests~~ ✅ DONE (reentrancy, arithmetic, auth, DoS)
 5. ~~README badges~~ ✅ DONE
 6. ~~Add CLI integration test (--help, --version flags)~~ ✅ DONE
-7. Config file (TOML) test coverage
+7. ~~Config file (TOML) test coverage~~ ✅ DONE
 8. git push (needs Xcode license fix or GitHub token auth)
