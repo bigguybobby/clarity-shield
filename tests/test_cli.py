@@ -139,15 +139,21 @@ class TestCLISeverityFilter:
         contract = str(contract[0])
 
         # Get all findings
-        rc_all, stdout_all, _ = run_cli(contract, "--format", "json", "--no-save")
+        rc_all, stdout_all, stderr_all = run_cli(contract, "--format", "json", "--no-save")
         # Get HIGH+ findings only
-        rc_high, stdout_high, _ = run_cli(contract, "--format", "json", "--no-save",
+        rc_high, stdout_high, stderr_high = run_cli(contract, "--format", "json", "--no-save",
                                            "--severity", "HIGH")
         # HIGH filter should produce same or fewer results
         # We check via the total count in the summary line
-        count_all = stdout_all.count("findings across")
-        count_high = stdout_high.count("findings across")
-        # Both should have the summary line
+        # Status messages go to stderr; actual report data to stdout
+        # Verify JSON on stdout is parseable (no status line pollution)
+        try:
+            data_all = json.loads(stdout_all) if stdout_all.strip() else {}
+        except json.JSONDecodeError:
+            pass  # non-JSON format is ok
+        # Check stderr has the summary line
+        count_all = stderr_all.count("findings across")
+        count_high = stderr_high.count("findings across")
         assert count_all >= 1
         assert count_high >= 1
 
@@ -197,3 +203,41 @@ class TestCLIDirectoryScan:
         rc, stdout, _ = run_cli(str(TEST_CONTRACTS), "--recursive", "--no-save",
                                  "--format", "markdown")
         assert "contract" in stdout.lower()
+
+
+class TestStdoutClean:
+    """Ensure status messages go to stderr, not stdout."""
+
+    def test_json_stdout_is_pure_json(self):
+        """JSON output on stdout should be valid JSON with no status lines mixed in."""
+        contract = list(TEST_CONTRACTS.glob("vulnerable-*.clar"))
+        assert contract
+        contract = str(contract[0])
+        rc, stdout, stderr = run_cli(contract, "--format", "json", "--no-save")
+        # stdout must be valid JSON
+        data = json.loads(stdout)
+        assert isinstance(data, dict)
+        # No status prefixes in stdout
+        assert "[*]" not in stdout
+        assert "[+]" not in stdout
+
+    def test_status_lines_on_stderr(self):
+        """Status messages like [*] Scanning and [+] Found should be on stderr."""
+        contract = list(TEST_CONTRACTS.glob("vulnerable-*.clar"))
+        assert contract
+        contract = str(contract[0])
+        rc, stdout, stderr = run_cli(contract, "--format", "json", "--no-save")
+        assert "[*] Scanning" in stderr
+        assert "[+] Found" in stderr
+        assert "findings across" in stderr
+
+    def test_sarif_stdout_is_pure_json(self):
+        """SARIF output on stdout should be valid JSON with no status lines."""
+        contract = list(TEST_CONTRACTS.glob("vulnerable-*.clar"))
+        assert contract
+        contract = str(contract[0])
+        rc, stdout, stderr = run_cli(contract, "--format", "sarif", "--no-save")
+        data = json.loads(stdout)
+        assert "$schema" in data
+        assert "[*]" not in stdout
+        assert "[+]" not in stdout

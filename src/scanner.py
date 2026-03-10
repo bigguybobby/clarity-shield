@@ -385,7 +385,7 @@ class ClarityScanner:
         detector_text = f"{len(enabled_specs)} detectors"
         if self.custom_rules:
             detector_text += f" + {len(self.custom_rules)} custom rules"
-        print(f"[*] Scanning {self.contract_name} with {detector_text}...")
+        print(f"[*] Scanning {self.contract_name} with {detector_text}...", file=sys.stderr)
 
         for detector_id, method_name in enabled_specs:
             detector = getattr(self, method_name, None)
@@ -399,7 +399,7 @@ class ClarityScanner:
         self._active_detector_name = ""
         self.check_custom_rules()
         
-        print(f"[+] Found {len(self.findings)} potential issues")
+        print(f"[+] Found {len(self.findings)} potential issues", file=sys.stderr)
         return self.findings
     
     def add_finding(self, severity: Severity, title: str, description: str,
@@ -2674,13 +2674,13 @@ def print_summary_dashboard(all_findings: Dict[str, List[Finding]]) -> None:
                 cells.append(f" {value.center(widths[idx])} ")
         return "│" + "│".join(cells) + "│"
 
-    print("\n[+] Summary Dashboard")
-    print(_hline("┌", "┬", "┐"))
-    print(_format_row(headers))
-    print(_hline("├", "┼", "┤"))
+    print("\n[+] Summary Dashboard", file=sys.stderr)
+    print(_hline("┌", "┬", "┐"), file=sys.stderr)
+    print(_format_row(headers), file=sys.stderr)
+    print(_hline("├", "┼", "┤"), file=sys.stderr)
     for row in rows:
-        print(_format_row(row))
-    print(_hline("└", "┴", "┘"))
+        print(_format_row(row), file=sys.stderr)
+    print(_hline("└", "┴", "┘"), file=sys.stderr)
 
 
 def main():
@@ -2711,7 +2711,7 @@ def main():
     try:
         config = load_config(args.config)
     except ValueError as exc:
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
     scanner_cfg = config.get("scanner", {}) if isinstance(config.get("scanner", {}), dict) else {}
@@ -2720,17 +2720,17 @@ def main():
         try:
             configured_default_severity = _normalize_severity(str(configured_default_severity))
         except ValueError as exc:
-            print(f"Error: {exc}")
+            print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
 
     target = Path(args.target)
     if not target.exists():
-        print(f"Error: '{args.target}' not found")
+        print(f"Error: '{args.target}' not found", file=sys.stderr)
         sys.exit(1)
 
     contracts = collect_contracts(target, args.recursive)
     if not contracts:
-        print(f"Error: No .clar files found in '{args.target}'")
+        print(f"Error: No .clar files found in '{args.target}'", file=sys.stderr)
         sys.exit(1)
 
     effective_severity = args.severity or configured_default_severity
@@ -2765,7 +2765,7 @@ def main():
                 output_file = output_dir / f"{scanner.contract_name}_report.{ext}"
                 with open(output_file, 'w', encoding="utf-8") as fh:
                     fh.write(report)
-                print(f"[+] Report saved to: {output_file}")
+                print(f"[+] Report saved to: {output_file}", file=sys.stderr)
 
     if args.format == "sarif":
         sarif_output = generate_sarif(all_findings)
@@ -2777,12 +2777,12 @@ def main():
             output_file = output_dir / "clarity-shield.sarif"
             with open(output_file, 'w', encoding="utf-8") as fh:
                 fh.write(sarif_output)
-            print(f"\n[+] SARIF report saved to: {output_file}")
+            print(f"\n[+] SARIF report saved to: {output_file}", file=sys.stderr)
 
     if args.summary:
         print_summary_dashboard(all_findings)
 
-    print(f"\n[+] Total: {total} findings across {len(contracts)} contract(s)")
+    print(f"\n[+] Total: {total} findings across {len(contracts)} contract(s)", file=sys.stderr)
 
     # Exit code based on severity
     if worst_severity == "CRITICAL":
