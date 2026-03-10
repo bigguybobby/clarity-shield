@@ -1,10 +1,17 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.1 | **Detectors:** 70 | **Tests:** 69 (all passing)
+**Version:** 2.3.2 | **Detectors:** 70 | **Tests:** 72 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
 ## Latest Changes (2026-03-10)
+- ✅ Fixed stdout/stderr separation: status lines ([*]/[+]) now go to stderr, report data stays on stdout
+- Fixes CI pipeline issue where JSON/SARIF output was polluted by status messages
+- Added 3 tests: JSON stdout purity, SARIF stdout purity, stderr status verification
+- Fixed severity filter test to check stderr instead of stdout
+- Test suite: 69 → 72 tests, all passing
+
+## Previous Changes (2026-03-10)
 - ✅ Added 22 config tests: TOML/YAML loading, enable/disable detectors, severity overrides, custom rules
 - New tests/test_config.py covering all config subsystems
 - Test suite: 47 → 69 tests, all passing
@@ -33,7 +40,6 @@
 
 ## Known Issues
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
-- Scanner prints `[*]` status lines to stdout mixed with JSON output (cosmetic)
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~2795 lines)
@@ -51,4 +57,5 @@
 5. ~~README badges~~ ✅ DONE
 6. ~~Add CLI integration test (--help, --version flags)~~ ✅ DONE
 7. ~~Config file (TOML) test coverage~~ ✅ DONE
-8. git push (needs Xcode license fix or GitHub token auth)
+8. ~~Fix stdout/stderr separation for clean JSON/SARIF piping~~ ✅ DONE
+9. git push (needs Xcode license fix or GitHub token auth)
