@@ -1,10 +1,18 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.2 | **Detectors:** 70 | **Tests:** 72 (all passing)
+**Version:** 2.3.3 | **Detectors:** 70 | **Tests:** 75 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
 ## Latest Changes (2026-03-10)
+- ✅ Removed 5 duplicate method definitions (dead code bug): check_fee_manipulation,
+  check_deadline_missing_in_swap, check_integer_truncation_division,
+  check_map_insert_without_existence_check, check_stx_transfer_to_variable_recipient
+- Python silently uses the last definition — earlier copies were dead code (96 lines removed)
+- Added 3 code quality meta-tests: no duplicate methods, all DETECTOR_SPECS have methods, unique IDs
+- Test suite: 72 → 75 tests, all passing
+
+## Previous Changes (2026-03-10)
 - ✅ Fixed stdout/stderr separation: status lines ([*]/[+]) now go to stderr, report data stays on stdout
 - Fixes CI pipeline issue where JSON/SARIF output was polluted by status messages
 - Added 3 tests: JSON stdout purity, SARIF stdout purity, stderr status verification
@@ -42,7 +50,7 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~2795 lines)
+- Single-file scanner: `src/scanner.py` (~2701 lines)
 - 70 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
@@ -58,4 +66,7 @@
 6. ~~Add CLI integration test (--help, --version flags)~~ ✅ DONE
 7. ~~Config file (TOML) test coverage~~ ✅ DONE
 8. ~~Fix stdout/stderr separation for clean JSON/SARIF piping~~ ✅ DONE
-9. git push (needs Xcode license fix or GitHub token auth)
+9. ~~Remove duplicate method definitions (dead code)~~ ✅ DONE
+10. git push (needs Xcode license fix or GitHub token auth)
+11. Add new detector: SIP-013 semi-fungible token compliance checks
+12. HTML report visual improvements (CSS/summary stats)
