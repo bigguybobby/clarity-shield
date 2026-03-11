@@ -1,10 +1,19 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.4 | **Detectors:** 71 | **Tests:** 80 (all passing)
+**Version:** 2.3.5 | **Detectors:** 72 | **Tests:** 87 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
 ## Latest Changes (2026-03-11)
+- ✅ Added Missing Token Supply Cap detector (#72)
+- Detects ft-mint? in any public function without supply cap / max-supply validation
+- Catches unbounded inflation in functions like claim, airdrop, reward (complements #29 which only checks named mint functions)
+- Uses regex word-boundary matching to avoid false positives (e.g. "cap" inside "uncapped-token")
+- New test contract: supply-cap-test.clar (4 functions, 2 vulnerable + 2 safe)
+- 7 new tests in tests/test_supply_cap.py
+- Test suite: 80 → 87 tests, all passing
+
+## Previous Changes (2026-03-11)
 - ✅ Added SIP-013 semi-fungible token compliance detector (#71)
 - Detects incomplete SFT implementations via trait reference, balance-map pattern, or multi-token FT pattern
 - Checks for 8 required SIP-013 functions: transfer, transfer-memo, get-balance, get-overall-balance, get-total-supply, get-overall-supply, get-token-uri, get-decimals
@@ -59,10 +68,10 @@
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~2701 lines)
-- 70 detectors registered in `DETECTOR_SPECS` list
+- 72 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 18 files in `test-contracts/`
+- Test contracts: 19 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
@@ -78,3 +87,4 @@
 10. git push (needs Xcode license fix or GitHub token auth)
 11. ~~Add new detector: SIP-013 semi-fungible token compliance checks~~ ✅ DONE
 12. HTML report visual improvements (CSS/summary stats)
+13. Add more economic safety detectors (e.g. uncapped NFT minting, unbounded reward emission)
