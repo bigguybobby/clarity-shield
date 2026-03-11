@@ -279,6 +279,7 @@ class ClarityScanner:
         (69, "check_flash_loan_callback_unguarded"),
         (70, "check_time_based_unlock_manipulation"),
         (71, "check_sip013_compliance"),
+        (72, "check_missing_token_supply_cap"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2412,6 +2413,53 @@ class ClarityScanner:
                 'Standards Compliance',
             )
 
+    def check_missing_token_supply_cap(self):
+        """#72 Detect ft-mint? calls in public functions without supply cap validation.
+
+        Minting without a max-supply check allows unbounded token inflation,
+        devaluing all existing holders.  This complements #29 (which checks
+        authorization) by verifying economic safety bounds.
+        """
+        # Patterns that indicate a supply-cap check is present.
+        # Use regex word-boundaries to avoid 'cap' matching inside 'uncapped'.
+        supply_patterns = [
+            r'max-supply', r'total-supply', r'supply-cap', r'max-tokens',
+            r'max-mint', r'get-total-supply', r'ft-get-supply',
+            r'(?<![a-z-])cap(?![a-z-])',   # standalone 'cap'
+            r'(?<![a-z-])limit(?![a-z-])', # standalone 'limit'
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            if 'ft-mint?' not in body:
+                continue
+            body_lower = body.lower()
+            has_supply_check = any(re.search(p, body_lower) for p in supply_patterns)
+            # Also accept a numeric comparison near ft-mint? (e.g. asserts! (< count u1000000))
+            if not has_supply_check:
+                has_supply_check = bool(re.search(
+                    r'asserts?!\s*\([<>]=?\s', body_lower
+                ))
+            if not has_supply_check:
+                mint_line_offset = 0
+                for i, fl in enumerate(func_lines):
+                    if 'ft-mint?' in self._strip_comments(fl):
+                        mint_line_offset = i
+                        break
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Uncapped Token Minting in '{func_name}'",
+                    'ft-mint? is called without any supply cap or max-supply validation. '
+                    'Without a hard cap, authorized minters can inflate the token supply '
+                    'indefinitely, destroying holder value.',
+                    func_start + mint_line_offset + 1,
+                    func_lines[mint_line_offset].strip() if mint_line_offset < len(func_lines) else '',
+                    'Add a max-supply constant and validate before minting: '
+                    '(asserts! (<= (+ (ft-get-supply token) amount) MAX-SUPPLY) ERR_CAP_EXCEEDED)',
+                    'Economic Safety',
+                )
+
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -2767,3 +2815,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Injected below the class — need to add inside the class instead
