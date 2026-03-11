@@ -1,10 +1,21 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.5 | **Detectors:** 72 | **Tests:** 87 (all passing)
+**Version:** 2.3.6 | **Detectors:** 73 | **Tests:** 95 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-11)
+## Latest Changes (2026-03-11, 22:00)
+- ✅ Added Uncapped NFT Minting detector (#73)
+- Detects nft-mint? in public functions without supply cap, per-address limit, or allowlist
+- Catches unlimited NFT minting that can flood collections and destroy holder value
+- Recognizes safe patterns: max-supply checks, numeric asserts, mint-count maps, allowlists
+- Fixed detector #72 (ft-mint? supply cap) — was false-positive on nft-mint? contracts
+  - Used negative lookbehind regex: (?<!n)ft-mint? to exclude nft-mint?
+- New test contract: nft-mint-cap-test.clar (2 vulnerable + 2 safe functions)
+- 8 new tests in tests/test_nft_mint_cap.py (incl. #72 regression test)
+- Test suite: 87 → 95 tests, all passing
+
+## Previous Changes (2026-03-11)
 - ✅ Added Missing Token Supply Cap detector (#72)
 - Detects ft-mint? in any public function without supply cap / max-supply validation
 - Catches unbounded inflation in functions like claim, airdrop, reward (complements #29 which only checks named mint functions)
@@ -67,11 +78,11 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~2701 lines)
-- 72 detectors registered in `DETECTOR_SPECS` list
+- Single-file scanner: `src/scanner.py` (~2760 lines)
+- 73 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 19 files in `test-contracts/`
+- Test contracts: 20 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
@@ -86,5 +97,6 @@
 9. ~~Remove duplicate method definitions (dead code)~~ ✅ DONE
 10. git push (needs Xcode license fix or GitHub token auth)
 11. ~~Add new detector: SIP-013 semi-fungible token compliance checks~~ ✅ DONE
-12. HTML report visual improvements (CSS/summary stats)
-13. Add more economic safety detectors (e.g. uncapped NFT minting, unbounded reward emission)
+13. ~~Add uncapped NFT minting detector~~ ✅ DONE
+14. Add unbounded reward emission detector
+15. HTML report visual improvements (CSS/summary stats)
