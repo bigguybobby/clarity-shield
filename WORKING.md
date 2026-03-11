@@ -1,10 +1,18 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.3 | **Detectors:** 70 | **Tests:** 75 (all passing)
+**Version:** 2.3.4 | **Detectors:** 71 | **Tests:** 80 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-10)
+## Latest Changes (2026-03-11)
+- ✅ Added SIP-013 semi-fungible token compliance detector (#71)
+- Detects incomplete SFT implementations via trait reference, balance-map pattern, or multi-token FT pattern
+- Checks for 8 required SIP-013 functions: transfer, transfer-memo, get-balance, get-overall-balance, get-total-supply, get-overall-supply, get-token-uri, get-decimals
+- 2 new test contracts: sip013-incomplete.clar, sip013-complete.clar
+- 5 new tests in tests/test_sip013.py
+- Test suite: 75 → 80 tests, all passing
+
+## Previous Changes (2026-03-10)
 - ✅ Removed 5 duplicate method definitions (dead code bug): check_fee_manipulation,
   check_deadline_missing_in_swap, check_integer_truncation_division,
   check_map_insert_without_existence_check, check_stx_transfer_to_variable_recipient
@@ -68,5 +76,5 @@
 8. ~~Fix stdout/stderr separation for clean JSON/SARIF piping~~ ✅ DONE
 9. ~~Remove duplicate method definitions (dead code)~~ ✅ DONE
 10. git push (needs Xcode license fix or GitHub token auth)
-11. Add new detector: SIP-013 semi-fungible token compliance checks
+11. ~~Add new detector: SIP-013 semi-fungible token compliance checks~~ ✅ DONE
 12. HTML report visual improvements (CSS/summary stats)
