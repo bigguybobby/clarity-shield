@@ -280,6 +280,7 @@ class ClarityScanner:
         (70, "check_time_based_unlock_manipulation"),
         (71, "check_sip013_compliance"),
         (72, "check_missing_token_supply_cap"),
+        (73, "check_uncapped_nft_minting"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2430,7 +2431,8 @@ class ClarityScanner:
         ]
         for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
             body = '\n'.join(self._strip_comments(l) for l in func_lines)
-            if 'ft-mint?' not in body:
+            # Use regex to match ft-mint? but NOT nft-mint?
+            if not re.search(r'(?<!n)ft-mint\?', body):
                 continue
             body_lower = body.lower()
             has_supply_check = any(re.search(p, body_lower) for p in supply_patterns)
@@ -2455,6 +2457,58 @@ class ClarityScanner:
                     func_lines[mint_line_offset].strip() if mint_line_offset < len(func_lines) else '',
                     'Add a max-supply constant and validate before minting: '
                     '(asserts! (<= (+ (ft-get-supply token) amount) MAX-SUPPLY) ERR_CAP_EXCEEDED)',
+                    'Economic Safety',
+                )
+
+    def check_uncapped_nft_minting(self):
+        """#73 Detect nft-mint? calls in public functions without mint count limits.
+
+        Unlimited NFT minting (no per-address cap, no total supply cap, no
+        allowlist) enables a single caller to mint unbounded NFTs, flooding
+        the collection and destroying rarity/value for existing holders.
+        """
+        # Patterns that indicate a mint-count/supply guard is present
+        limit_patterns = [
+            r'max-supply', r'total-supply', r'max-mint', r'mint-limit',
+            r'mint-count', r'minted-count', r'total-minted', r'max-nft',
+            r'mint-cap', r'allowlist', r'whitelist', r'allow-list',
+            r'nft-get-supply', r'get-last-token-id',
+            r'(?<![a-z-])cap(?![a-z-])',
+            r'(?<![a-z-])limit(?![a-z-])',
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            if 'nft-mint?' not in body:
+                continue
+            body_lower = body.lower()
+            has_limit = any(re.search(p, body_lower) for p in limit_patterns)
+            # Accept numeric comparison as a guard (e.g. asserts! (< count u10000))
+            if not has_limit:
+                has_limit = bool(re.search(
+                    r'asserts?!\s*\([<>]=?\s', body_lower
+                ))
+            # Accept map-get? near nft-mint? as a per-address tracking check
+            if not has_limit:
+                has_limit = bool(re.search(
+                    r'map-get\?\s+\S*mint', body_lower
+                ))
+            if not has_limit:
+                mint_line_offset = 0
+                for i, fl in enumerate(func_lines):
+                    if 'nft-mint?' in self._strip_comments(fl):
+                        mint_line_offset = i
+                        break
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Uncapped NFT Minting in '{func_name}'",
+                    'nft-mint? is called without any supply cap, per-address mint limit, '
+                    'or allowlist check. An attacker or authorized caller could mint an '
+                    'unlimited number of NFTs, flooding the collection and destroying '
+                    'value for existing holders.',
+                    func_start + mint_line_offset + 1,
+                    func_lines[mint_line_offset].strip() if mint_line_offset < len(func_lines) else '',
+                    'Add a total supply cap (asserts! (<= next-id MAX-SUPPLY) ERR_SOLD_OUT) '
+                    'or per-address mint limit via a tracking map.',
                     'Economic Safety',
                 )
 
