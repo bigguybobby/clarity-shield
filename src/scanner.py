@@ -278,6 +278,7 @@ class ClarityScanner:
         (68, "check_sip009_royalty_bypass"),
         (69, "check_flash_loan_callback_unguarded"),
         (70, "check_time_based_unlock_manipulation"),
+        (71, "check_sip013_compliance"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2343,6 +2344,73 @@ class ClarityScanner:
                     "a minimum block delta for safety.",
                     "Time Safety",
                 )
+
+
+    def check_sip013_compliance(self):
+        """#71 Detect SFT contracts missing required SIP-013 semi-fungible token functions"""
+        # SIP-013 semi-fungible tokens use maps keyed by (token-id, owner)
+        # Indicators: trait reference, or map with token-id + balance patterns
+        sft_indicators = [
+            'sip013-semi-fungible-token',
+            'semi-fungible',
+            'sft-mint',
+        ]
+        # Also detect via common SFT map patterns: balance maps keyed by token-id + principal
+        has_sft_trait = any(
+            ind in self.content.lower() for ind in sft_indicators
+        )
+        # Check for balance-map pattern: a map with token-id and principal as keys
+        has_sft_map = bool(re.search(
+            r'\(define-map\s+\S*balance\S*\s+\{[^}]*token-id[^}]*\}',
+            self.content, re.IGNORECASE
+        ))
+        # Also detect multi-token patterns using ft-mint? with token-id references
+        has_multi_token = (
+            'define-fungible-token' in self.content
+            and re.search(r'token-id', self.content, re.IGNORECASE) is not None
+            and ('ft-mint?' in self.content or 'ft-burn?' in self.content)
+        )
+
+        if not (has_sft_trait or has_sft_map or has_multi_token):
+            return
+
+        # SIP-013 required functions
+        required_functions = {
+            'transfer': False,
+            'transfer-memo': False,
+            'get-balance': False,
+            'get-overall-balance': False,
+            'get-total-supply': False,
+            'get-overall-supply': False,
+            'get-token-uri': False,
+            'get-decimals': False,
+        }
+
+        for line in self.lines:
+            code = self._strip_comments(line)
+            for func_name in required_functions:
+                if re.search(
+                    rf'\(define-(public|read-only)\s+\({re.escape(func_name)}\b',
+                    code,
+                ):
+                    required_functions[func_name] = True
+
+        missing = [f for f, present in required_functions.items() if not present]
+
+        if missing:
+            self.add_finding(
+                Severity.MEDIUM,
+                'Incomplete SIP-013 Semi-Fungible Token Interface',
+                f"Contract appears to implement a semi-fungible token but is missing "
+                f"required SIP-013 functions: {', '.join(missing)}. SIP-013 compliance "
+                f"is needed for interoperability with SFT marketplaces, wallets, and "
+                f"DeFi protocols on Stacks.",
+                1,
+                self.lines[0] if self.lines else '',
+                f"Implement the missing functions: {', '.join(missing)}. "
+                "See https://github.com/stacksgov/sips/blob/main/sips/sip-013.md",
+                'Standards Compliance',
+            )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
