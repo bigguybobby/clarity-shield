@@ -282,6 +282,7 @@ class ClarityScanner:
         (72, "check_missing_token_supply_cap"),
         (73, "check_uncapped_nft_minting"),
         (74, "check_unbounded_reward_emission"),
+        (75, "check_missing_zero_amount_validation"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2587,6 +2588,77 @@ class ClarityScanner:
                 'Economic Safety',
             )
 
+
+    def check_missing_zero_amount_validation(self):
+        """#75 Detect public functions accepting amount params without zero-check.
+
+        Public functions that take an amount parameter and use it in
+        stx-transfer?, ft-transfer?, or ft-mint? without first asserting
+        that the amount is greater than zero allow zero-amount transactions.
+        Zero-amount transfers can be used for:
+        - Event/log spam without economic cost
+        - Manipulating claim counters or reward maps
+        - Bypassing rate limits that check "has transferred" without amounts
+        - Inflating transaction counts for airdrop eligibility
+        """
+        # Transfer operations that take an amount argument
+        transfer_patterns = [
+            r'stx-transfer\?',
+            r'ft-transfer\?',
+            r'ft-mint\?',
+        ]
+        # Patterns that validate amount > 0
+        zero_check_patterns = [
+            r'asserts?!\s*\(>\s+amount\s+u0\)',       # (asserts! (> amount u0) ...)
+            r'asserts?!\s*\(>\s+amount\s+\(var-get',   # (asserts! (> amount (var-get min-amount)) ...)
+            r'asserts?!\s*\(is-eq\s+\(>\s+amount',     # wrapped comparison
+            r'asserts?!\s*\(not\s+\(is-eq\s+amount\s+u0', # (asserts! (not (is-eq amount u0)) ...)
+            r'asserts?!\s*\(>=\s+amount\s+u1\)',       # (asserts! (>= amount u1) ...)
+            r'asserts?!\s*\(>\s+amount\s+u0',          # relaxed: (asserts! (> amount u0 ...
+            r'asserts?!\s*\(>=\s+amount\s+u1',         # relaxed: (asserts! (>= amount u1 ...
+            r'\(if\s+\(is-eq\s+amount\s+u0\)',         # (if (is-eq amount u0) (err ...))
+            r'\(if\s+\(<\s+amount\s+u1\)',             # (if (< amount u1) (err ...))
+            r'\(if\s+\(<=\s+amount\s+u0\)',            # (if (<= amount u0) (err ...))
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+            # Must have an 'amount' parameter
+            # Look for (amount uint) in the function signature area (first few lines)
+            header = '\n'.join(self._strip_comments(l) for l in func_lines[:5]).lower()
+            if 'amount' not in header:
+                continue
+            # Check if any of the amount param patterns exist
+            if not re.search(r'\(\s*amount\s+(uint|int)\s*\)', header):
+                continue
+            # Must contain a transfer using the amount
+            has_transfer = any(re.search(p, body_lower) for p in transfer_patterns)
+            if not has_transfer:
+                continue
+            # Check for zero-amount validation
+            has_zero_check = any(re.search(p, body_lower) for p in zero_check_patterns)
+            if has_zero_check:
+                continue
+            # Find the transfer line for reporting
+            transfer_line_offset = 0
+            for i, fl in enumerate(func_lines):
+                stripped = self._strip_comments(fl).lower()
+                if any(re.search(p, stripped) for p in transfer_patterns):
+                    transfer_line_offset = i
+                    break
+            self.add_finding(
+                Severity.MEDIUM,
+                f"Missing Zero-Amount Validation in '{func_name}'",
+                'This function accepts an amount parameter and uses it in a token '
+                'transfer or mint operation without first checking that amount > 0. '
+                'Zero-amount transfers succeed silently and can be abused for event '
+                'spam, reward map manipulation, or inflating on-chain metrics.',
+                func_start + transfer_line_offset + 1,
+                func_lines[transfer_line_offset].strip() if transfer_line_offset < len(func_lines) else '',
+                'Add (asserts! (> amount u0) ERR-INVALID-AMOUNT) at the start of '
+                'the function before any transfer operations.',
+                'Input Validation',
+            )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
