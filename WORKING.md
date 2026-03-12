@@ -1,10 +1,20 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.3.6 | **Detectors:** 73 | **Tests:** 95 (all passing)
+**Version:** 2.4.0 | **Detectors:** 74 | **Tests:** 103 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-11, 22:00)
+## Latest Changes (2026-03-12, 06:00)
+- ✅ Added Unbounded Reward Emission detector (#74)
+- Detects public reward/claim/harvest/airdrop/distribute functions that transfer STX or FTs
+  without cooldown, block-height checks, epoch guards, or per-user claim tracking
+- Catches repeated-call drain attacks where attacker calls claim in same block to drain pool
+- Recognizes safe patterns: block-height guards, claim maps, asserts!, epoch/cooldown/nonce refs
+- New test contract: reward-emission-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_reward_emission.py
+- Test suite: 95 → 103 tests, all passing
+
+## Previous Changes (2026-03-11, 22:00)
 - ✅ Added Uncapped NFT Minting detector (#73)
 - Detects nft-mint? in public functions without supply cap, per-address limit, or allowlist
 - Catches unlimited NFT minting that can flood collections and destroy holder value
@@ -79,10 +89,10 @@
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~2760 lines)
-- 73 detectors registered in `DETECTOR_SPECS` list
+- 74 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 20 files in `test-contracts/`
+- Test contracts: 21 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
@@ -98,5 +108,5 @@
 10. git push (needs Xcode license fix or GitHub token auth)
 11. ~~Add new detector: SIP-013 semi-fungible token compliance checks~~ ✅ DONE
 13. ~~Add uncapped NFT minting detector~~ ✅ DONE
-14. Add unbounded reward emission detector
+14. ~~Add unbounded reward emission detector~~ ✅ DONE
 15. HTML report visual improvements (CSS/summary stats)
