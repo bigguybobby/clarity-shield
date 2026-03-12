@@ -281,6 +281,7 @@ class ClarityScanner:
         (71, "check_sip013_compliance"),
         (72, "check_missing_token_supply_cap"),
         (73, "check_uncapped_nft_minting"),
+        (74, "check_unbounded_reward_emission"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2512,6 +2513,79 @@ class ClarityScanner:
                     'Economic Safety',
                 )
 
+
+
+
+    def check_unbounded_reward_emission(self):
+        """#74 Detect reward/claim functions that transfer tokens without rate-limiting.
+
+        Public functions that distribute rewards (stx-transfer?, ft-transfer?,
+        contract-call? ... transfer) without cooldown checks, epoch/block-height
+        guards, or per-user claim tracking allow unbounded reward draining.
+        An attacker can call the function repeatedly in the same block to
+        extract the entire reward pool.
+        """
+        # Function names that suggest reward distribution
+        reward_name_patterns = [
+            r'claim', r'harvest', r'reward', r'airdrop', r'distribute',
+            r'yield', r'payout', r'redeem', r'collect',
+        ]
+        # Transfer patterns that move value
+        transfer_patterns = [
+            r'stx-transfer\?', r'ft-transfer\?',
+            r'contract-call\?\s+\S+\s+transfer\b',
+        ]
+        # Rate-limiting / cooldown patterns that make it safe
+        guard_patterns = [
+            r'block-height', r'burn-block-height', r'stacks-block-height',
+            r'last-claim', r'last-harvest', r'last-redeem', r'last-collect',
+            r'claimed', r'claim-epoch', r'claim-block', r'claim-height',
+            r'cooldown', r'interval', r'epoch', r'period',
+            r'already-claimed', r'has-claimed', r'is-claimed',
+            r'map-get\?\s+\S*claim', r'map-get\?\s+\S*reward',
+            r'map-set\s+\S*claim', r'map-set\s+\S*reward',
+            r'nonce', r'reward-cycle', r'cycle-id',
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            # Check if function name matches a reward pattern
+            name_lower = func_name.lower()
+            is_reward_func = any(re.search(p, name_lower) for p in reward_name_patterns)
+            if not is_reward_func:
+                continue
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+            # Must contain a transfer
+            has_transfer = any(re.search(p, body_lower) for p in transfer_patterns)
+            if not has_transfer:
+                continue
+            # Check for rate-limiting guards
+            has_guard = any(re.search(p, body_lower) for p in guard_patterns)
+            if has_guard:
+                continue
+            # Also accept asserts! with comparison as a guard
+            if re.search(r'asserts?!\s*\(', body_lower):
+                continue
+            # Find the transfer line for reporting
+            transfer_line_offset = 0
+            for i, fl in enumerate(func_lines):
+                stripped = self._strip_comments(fl).lower()
+                if any(re.search(p, stripped) for p in transfer_patterns):
+                    transfer_line_offset = i
+                    break
+            self.add_finding(
+                Severity.HIGH,
+                f"Unbounded Reward Emission in '{func_name}'",
+                'This reward/claim function transfers tokens without any cooldown, '
+                'block-height check, epoch guard, or per-user claim tracking. '
+                'An attacker can call it repeatedly in the same block to drain '
+                'the entire reward pool before others can claim.',
+                func_start + transfer_line_offset + 1,
+                func_lines[transfer_line_offset].strip() if transfer_line_offset < len(func_lines) else '',
+                'Add a per-user claim map (map-set last-claimed {user: tx-sender} '
+                '{block: block-height}) and check it at the start with asserts! '
+                'to enforce a cooldown period between claims.',
+                'Economic Safety',
+            )
 
 
 def generate_report(findings: List[Finding], contract_name: str, 
