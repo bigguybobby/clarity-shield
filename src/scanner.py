@@ -283,6 +283,7 @@ class ClarityScanner:
         (73, "check_uncapped_nft_minting"),
         (74, "check_unbounded_reward_emission"),
         (75, "check_missing_zero_amount_validation"),
+        (76, "check_insecure_randomness"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2658,6 +2659,70 @@ class ClarityScanner:
                 'Add (asserts! (> amount u0) ERR-INVALID-AMOUNT) at the start of '
                 'the function before any transfer operations.',
                 'Input Validation',
+            )
+
+
+    def check_insecure_randomness(self):
+        """#76 Detect use of on-chain values as randomness sources.
+
+        Contracts using block-height, burn-block-height, stx-liquid-supply,
+        or get-block-info? as input to modulo (mod) or hashing (hash160,
+        sha256, sha512, keccak256) for selection/lottery logic create
+        miner-exploitable pseudo-randomness.  Miners can manipulate block
+        data to influence outcomes in their favor.
+        """
+        on_chain_sources = [
+            'burn-block-height',
+            'block-height',
+            'stx-liquid-supply',
+            r'get-block-info\?',
+        ]
+        randomness_ops = [
+            r'\bmod\b',
+            'hash160',
+            'sha256',
+            'sha512',
+            'keccak256',
+        ]
+        safe_markers = [
+            'vrf', 'oracle', 'commit-reveal', 'chainlink',
+            'randomness-seed', 'off-chain', 'external-random',
+        ]
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+            if any(marker in body_lower for marker in safe_markers):
+                continue
+            matched_source = None
+            for src in on_chain_sources:
+                if re.search(src, body_lower):
+                    matched_source = src.replace(r'\?', '?')
+                    break
+            if not matched_source:
+                continue
+            has_rng_op = any(re.search(op, body_lower) for op in randomness_ops)
+            if not has_rng_op:
+                continue
+            report_line_offset = 0
+            for i, fl in enumerate(func_lines):
+                stripped = self._strip_comments(fl).lower()
+                if re.search(matched_source.replace('?', r'\?'), stripped):
+                    report_line_offset = i
+                    break
+            self.add_finding(
+                Severity.HIGH,
+                f"Insecure Randomness Source in '{func_name}'",
+                f"This function uses '{matched_source}' combined with hashing or "
+                "modulo arithmetic to generate pseudo-random values. On-chain data "
+                "is deterministic and miner-influenceable — miners can reorder, "
+                "withhold, or selectively include transactions to manipulate outcomes "
+                "in lotteries, NFT mints, or reward distributions.",
+                func_start + report_line_offset + 1,
+                func_lines[report_line_offset].strip() if report_line_offset < len(func_lines) else '',
+                "Use a commit-reveal scheme, VRF (Verifiable Random Function), or "
+                "an off-chain oracle for randomness. Never derive randomness solely "
+                "from on-chain block data.",
+                'Randomness',
             )
 
 def generate_report(findings: List[Finding], contract_name: str, 
