@@ -1,10 +1,20 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.4.0 | **Detectors:** 74 | **Tests:** 103 (all passing)
+**Version:** 2.5.0 | **Detectors:** 75 | **Tests:** 111 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-12, 06:00)
+## Latest Changes (2026-03-12, 14:00)
+- ✅ Added Missing Zero-Amount Validation detector (#75)
+- Detects public functions accepting amount params used in stx-transfer?/ft-transfer?/ft-mint? without checking amount > 0
+- Zero-amount transfers can be abused for event spam, reward map manipulation, and metric inflation
+- Recognizes safe patterns: asserts! (> amount u0), (>= amount u1), if-checks
+- MEDIUM severity, Input Validation category
+- New test contract: zero-amount-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_zero_amount.py
+- Test suite: 103 → 111 tests, all passing
+
+## Previous Changes (2026-03-12, 06:00)
 - ✅ Added Unbounded Reward Emission detector (#74)
 - Detects public reward/claim/harvest/airdrop/distribute functions that transfer STX or FTs
   without cooldown, block-height checks, epoch guards, or per-user claim tracking
@@ -88,11 +98,11 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~2760 lines)
-- 74 detectors registered in `DETECTOR_SPECS` list
+- Single-file scanner: `src/scanner.py` (~2830 lines)
+- 75 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 21 files in `test-contracts/`
+- Test contracts: 22 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
