@@ -1,10 +1,22 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.5.0 | **Detectors:** 75 | **Tests:** 111 (all passing)
+**Version:** 2.6.0 | **Detectors:** 76 | **Tests:** 119 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-12, 14:00)
+## Latest Changes (2026-03-12, 22:00)
+- ✅ Added Insecure Randomness Source detector (#76)
+- Detects public functions using block-height/burn-block-height/stx-liquid-supply/get-block-info?
+  combined with mod/hash operations (sha256, hash160, keccak256) for pseudo-randomness
+- Miners can manipulate on-chain values to influence lottery/selection/NFT-mint outcomes
+- Recognizes safe patterns: VRF, oracle, commit-reveal, chainlink, external-random
+- Checks longer matches first (burn-block-height before block-height) to report accurately
+- HIGH severity, Randomness category
+- New test contract: insecure-randomness-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_insecure_randomness.py
+- Test suite: 111 → 119 tests, all passing
+
+## Previous Changes (2026-03-12, 14:00)
 - ✅ Added Missing Zero-Amount Validation detector (#75)
 - Detects public functions accepting amount params used in stx-transfer?/ft-transfer?/ft-mint? without checking amount > 0
 - Zero-amount transfers can be abused for event spam, reward map manipulation, and metric inflation
