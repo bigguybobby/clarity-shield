@@ -1,10 +1,23 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.8.0 | **Detectors:** 78 | **Tests:** 135 (all passing)
+**Version:** 2.9.0 | **Detectors:** 79 | **Tests:** 143 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-13, 14:00)
+## Latest Changes (2026-03-13, 22:00)
+- ✅ Added Missing Slippage Protection detector (#79)
+- Detects public swap/exchange/trade/convert/buy/sell functions that perform
+  token transfers without enforcing a minimum output amount
+- Without slippage protection, users are vulnerable to sandwich attacks
+  where attackers front-run and back-run to extract value from user trades
+- Recognizes safe patterns: min-out, min-amount, slippage, expected-out params
+  and asserts!/if bound checks against minimums
+- HIGH severity, DEX Safety category
+- New test contract: slippage-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_slippage_protection.py
+- Test suite: 135 → 143 tests, all passing
+
+## Previous Changes (2026-03-13, 14:00)
 - ✅ Added Unvalidated Fee/Rate Parameter detector (#78)
 - Detects public functions accepting fee/percent/rate/commission/royalty/bps
   parameters without upper-bound validation (asserts! with <= or < checks)
@@ -134,10 +147,10 @@
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~2830 lines)
-- 75 detectors registered in `DETECTOR_SPECS` list
+- 79 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 22 files in `test-contracts/`
+- Test contracts: 23 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
@@ -155,3 +168,4 @@
 13. ~~Add uncapped NFT minting detector~~ ✅ DONE
 14. ~~Add unbounded reward emission detector~~ ✅ DONE
 15. HTML report visual improvements (CSS/summary stats)
+16. Add more DeFi-specific detectors (flash loan + oracle manipulation patterns)
