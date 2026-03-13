@@ -284,6 +284,7 @@ class ClarityScanner:
         (74, "check_unbounded_reward_emission"),
         (75, "check_missing_zero_amount_validation"),
         (76, "check_insecure_randomness"),
+        (77, "check_single_step_privilege_transfer"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2724,6 +2725,87 @@ class ClarityScanner:
                 "from on-chain block data.",
                 'Randomness',
             )
+
+    def check_single_step_privilege_transfer(self):
+        """#77 Detect single-step privilege/ownership transfer without confirmation.
+
+        Contracts that allow transferring admin/owner roles in a single
+        transaction risk permanent lockout if the new address is wrong.
+        A two-step pattern (propose + accept) ensures the new owner can
+        actually sign transactions before the transfer completes.
+        """
+        privilege_var_patterns = [
+            'owner', 'admin', 'authority', 'governor', 'operator',
+            'controller', 'manager',
+        ]
+        # Find all data-var names that look like privilege vars
+        privilege_vars = set()
+        for line in self.lines:
+            stripped = self._strip_comments(line).lower()
+            m = re.search(r'\(define-data-var\s+(\S+)\s+principal', stripped)
+            if m:
+                var_name = m.group(1)
+                if any(p in var_name for p in privilege_var_patterns):
+                    privilege_vars.add(var_name)
+
+        if not privilege_vars:
+            return
+
+        # Build per-var two-step coverage: a var is safe if it has pending/propose/accept pattern
+        content_lower = self.content.lower()
+        vars_with_two_step = set()
+        for priv_var in privilege_vars:
+            # Extract the role keyword (e.g. 'owner' from 'contract-owner')
+            role_parts = [p for p in priv_var.split('-') if p in privilege_var_patterns]
+            role = role_parts[0] if role_parts else priv_var
+            two_step_markers = [
+                f'pending-{role}', f'proposed-{role}', f'pending-{priv_var}',
+                f'accept-{role}', f'claim-{role}', f'confirm-{role}',
+                f'accept-{role}ship', f'claim-{role}ship', f'confirm-{role}ship',
+            ]
+            if any(marker in content_lower for marker in two_step_markers):
+                vars_with_two_step.add(priv_var)
+
+        # Scan public functions for var-set on privilege vars with a parameter (not tx-sender)
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+
+            for priv_var in privilege_vars:
+                if priv_var in vars_with_two_step:
+                    continue
+                pattern = r'\(var-set\s+' + re.escape(priv_var) + r'\s+(\S+)'
+                match = re.search(pattern, body_lower)
+                if not match:
+                    continue
+
+                new_value = match.group(1)
+                # If setting to tx-sender, it is not a transfer to an arbitrary principal
+                if new_value.rstrip(')') == 'tx-sender':
+                    continue
+
+                # Find the line with var-set for reporting
+                report_line_offset = 0
+                for i, fl in enumerate(func_lines):
+                    stripped = self._strip_comments(fl).lower()
+                    if f'var-set {priv_var}' in stripped:
+                        report_line_offset = i
+                        break
+
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Single-Step Privilege Transfer in \'{func_name}\'",
+                    f"This function transfers the privileged role \'{priv_var}\' to a new "
+                    "principal in a single transaction. If the new address is incorrect "
+                    "(typo, wrong network, non-existent), admin access is permanently "
+                    "lost with no recovery mechanism.",
+                    func_start + report_line_offset + 1,
+                    func_lines[report_line_offset].strip() if report_line_offset < len(func_lines) else '',
+                    "Use a two-step ownership transfer pattern: (1) current owner calls "
+                    "propose-owner to set a pending-owner, (2) new owner calls accept-ownership "
+                    "to confirm. This ensures the new address is valid and accessible.",
+                    'Access Control',
+                )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
