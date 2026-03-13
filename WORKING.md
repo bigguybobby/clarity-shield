@@ -1,10 +1,22 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.6.0 | **Detectors:** 76 | **Tests:** 119 (all passing)
+**Version:** 2.7.0 | **Detectors:** 77 | **Tests:** 127 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-12, 22:00)
+## Latest Changes (2026-03-13, 06:00)
+- ✅ Added Single-Step Privilege Transfer detector (#77)
+- Detects public functions that transfer owner/admin/authority roles to arbitrary
+  principals in a single transaction without two-step confirmation (propose + accept)
+- Single-step transfers risk permanent lockout if new address is wrong (typo, wrong network)
+- Per-variable two-step detection: skips vars with pending/propose/accept patterns
+- Recognizes safe patterns: tx-sender self-set, existing two-step ownership flows
+- HIGH severity, Access Control category
+- New test contract: privilege-transfer-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_privilege_transfer.py
+- Test suite: 119 → 127 tests, all passing
+
+## Previous Changes (2026-03-12, 22:00)
 - ✅ Added Insecure Randomness Source detector (#76)
 - Detects public functions using block-height/burn-block-height/stx-liquid-supply/get-block-info?
   combined with mod/hash operations (sha256, hash160, keccak256) for pseudo-randomness
