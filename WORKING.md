@@ -1,10 +1,21 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.7.0 | **Detectors:** 77 | **Tests:** 127 (all passing)
+**Version:** 2.8.0 | **Detectors:** 78 | **Tests:** 135 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-13, 06:00)
+## Latest Changes (2026-03-13, 14:00)
+- ✅ Added Unvalidated Fee/Rate Parameter detector (#78)
+- Detects public functions accepting fee/percent/rate/commission/royalty/bps
+  parameters without upper-bound validation (asserts! with <= or < checks)
+- Uncapped fee percentages can be set to 100% (or 10000 bps), draining all funds
+- Recognizes safe patterns: asserts! (<= param max), asserts! (< param max)
+- HIGH severity, Input Validation category
+- New test contract: fee-param-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_fee_parameter.py
+- Test suite: 127 → 135 tests, all passing
+
+## Previous Changes (2026-03-13, 06:00)
 - ✅ Added Single-Step Privilege Transfer detector (#77)
 - Detects public functions that transfer owner/admin/authority roles to arbitrary
   principals in a single transaction without two-step confirmation (propose + accept)
