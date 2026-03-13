@@ -286,6 +286,7 @@ class ClarityScanner:
         (76, "check_insecure_randomness"),
         (77, "check_single_step_privilege_transfer"),
         (78, "check_unvalidated_fee_parameter"),
+        (79, "check_missing_slippage_protection"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2885,6 +2886,102 @@ class ClarityScanner:
                     "constant for clarity.",
                     'Input Validation',
                 )
+
+
+    def check_missing_slippage_protection(self):
+        """#79 Detect swap/exchange functions without minimum output validation.
+
+        DEX and swap functions that transfer tokens without enforcing a minimum
+        output amount leave users vulnerable to sandwich attacks and front-running.
+        Attackers can manipulate the pool price before and after the transaction,
+        extracting value from the user's trade.
+        """
+        swap_name_patterns = [
+            'swap', 'exchange', 'trade', 'convert', 'sell', 'buy',
+            'liquidate', 'fill-order', 'execute-order',
+        ]
+        transfer_patterns = [
+            r'stx-transfer\?',
+            r'(?<!n)ft-transfer\?',
+            r'contract-call\?\s+\S+\s+transfer',
+        ]
+        # Patterns that indicate slippage protection exists
+        slippage_safe_patterns = [
+            r'min-out', r'min-amount', r'min-receive', r'min-return',
+            r'minimum-out', r'minimum-amount', r'minimum-receive',
+            r'slippage', r'min-tokens', r'min-dx', r'min-dy',
+            r'expected-out', r'expected-amount', r'min-expected',
+            r'amount-out-min', r'min-output',
+        ]
+        # Bound check patterns: asserts!/if comparing output >= min
+        bound_check_patterns = [
+            r'asserts!\s+\(>=?\s+\w+[\w-]*\s+\w+[\w-]*min',
+            r'asserts!\s+\(>=?\s+\w+[\w-]*\s+min',
+            r'asserts!\s+\(<=?\s+min[\w-]*\s+\w+',
+            r'if\s+\(>=?\s+\w+[\w-]*\s+min',
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+            func_name_lower = func_name.lower()
+
+            # Check if function name matches swap/exchange patterns
+            is_swap_func = any(sp in func_name_lower for sp in swap_name_patterns)
+            if not is_swap_func:
+                continue
+
+            # Check if function actually does a token transfer
+            has_transfer = False
+            transfer_line_offset = 0
+            for tp in transfer_patterns:
+                match = re.search(tp, body_lower)
+                if match:
+                    has_transfer = True
+                    matched_pos = match.start()
+                    line_count = body_lower[:matched_pos].count('\n')
+                    transfer_line_offset = line_count
+                    break
+
+            if not has_transfer:
+                continue
+
+            # Check if function has slippage protection
+            has_slippage = False
+
+            for sp in slippage_safe_patterns:
+                if re.search(sp, body_lower):
+                    has_slippage = True
+                    break
+
+            if has_slippage:
+                continue
+
+            for bp in bound_check_patterns:
+                if re.search(bp, body_lower):
+                    has_slippage = True
+                    break
+
+            if has_slippage:
+                continue
+
+            self.add_finding(
+                Severity.HIGH,
+                f"Missing Slippage Protection in '{func_name}'",
+                f"The swap/exchange function '{func_name}' performs token transfers "
+                "without enforcing a minimum output amount. Without slippage protection, "
+                "users are vulnerable to sandwich attacks where an attacker front-runs "
+                "the transaction to move the price, executes their own trade, then "
+                "back-runs to profit \u2014 extracting value from the user's trade. "
+                "This is especially dangerous in AMM/DEX pools with low liquidity.",
+                func_start + transfer_line_offset + 1,
+                func_lines[transfer_line_offset].strip() if transfer_line_offset < len(func_lines) else '',
+                "Add a min-amount-out parameter and validate: "
+                "(asserts! (>= actual-output min-amount-out) (err ERR_SLIPPAGE)). "
+                "Consider also adding a deadline parameter to prevent stale "
+                "transactions from executing at unfavorable prices.",
+                'DEX Safety',
+            )
 
 
 def generate_report(findings: List[Finding], contract_name: str, 
