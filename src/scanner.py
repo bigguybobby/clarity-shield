@@ -285,6 +285,7 @@ class ClarityScanner:
         (75, "check_missing_zero_amount_validation"),
         (76, "check_insecure_randomness"),
         (77, "check_single_step_privilege_transfer"),
+        (78, "check_unvalidated_fee_parameter"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2806,6 +2807,85 @@ class ClarityScanner:
                     "to confirm. This ensures the new address is valid and accessible.",
                     'Access Control',
                 )
+
+
+    def check_unvalidated_fee_parameter(self):
+        """#78 Detect fee/percentage/rate parameters without bounds validation.
+
+        Public functions that accept fee, percentage, rate, commission, royalty,
+        or basis-point parameters and use them in arithmetic without upper-bound
+        checks allow callers (or admins) to set values that drain funds.
+        A fee-percent of 100 (or 10000 bps) means the entire amount is taken.
+        """
+        fee_param_patterns = [
+            'fee', 'percent', 'percentage', 'rate', 'commission',
+            'royalty', 'bps', 'basis', 'slippage', 'spread',
+        ]
+        bounds_patterns = [
+            r'asserts!\s+\(<=?\s+{param}',
+            r'asserts!\s+\(>=?\s+\w+\s+{param}',
+            r'asserts!\s+\(<\s+{param}',
+            r'asserts!\s+\(>\s+\w+\s+{param}',
+            r'if\s+\(<=?\s+{param}',
+            r'if\s+\(<\s+{param}',
+            r'match.*\(<=?\s+{param}',
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+
+            # Extract parameter names from the function header lines
+            header = ' '.join(self._strip_comments(l) for l in func_lines[:3]).lower()
+            param_matches = re.findall(r'\(([a-z0-9_-]+)\s+uint\)', header)
+            if not param_matches:
+                continue
+
+            for param_name in param_matches:
+                # Check if param name matches fee/rate patterns
+                if not any(fp in param_name for fp in fee_param_patterns):
+                    continue
+
+                # Check if the parameter is actually used in the function body
+                if param_name not in body_lower:
+                    continue
+
+                # Check for bounds validation
+                has_bounds = False
+                for bp in bounds_patterns:
+                    pattern = bp.format(param=re.escape(param_name))
+                    if re.search(pattern, body_lower):
+                        has_bounds = True
+                        break
+
+                if has_bounds:
+                    continue
+
+                # Find the line where the param is first used for reporting
+                report_line_offset = 0
+                for i, fl in enumerate(func_lines):
+                    stripped = self._strip_comments(fl).lower()
+                    if param_name in stripped and 'define-public' not in stripped:
+                        report_line_offset = i
+                        break
+
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Unvalidated Fee/Rate Parameter '{param_name}' in '{func_name}'",
+                    f"The function '{func_name}' accepts a fee/rate parameter "
+                    f"'{param_name}' of type uint without validating its upper bound. "
+                    "An uncapped fee percentage can be set to 100% (or 10000 bps), "
+                    "allowing the entire transfer amount to be taken as fees. "
+                    "Malicious callers or compromised admins can drain user funds.",
+                    func_start + report_line_offset + 1,
+                    func_lines[report_line_offset].strip() if report_line_offset < len(func_lines) else '',
+                    "Add explicit bounds validation: (asserts! (<= fee-param MAX_FEE) "
+                    "(err ERR_FEE_TOO_HIGH)). Use basis points (bps) with a max of "
+                    "1000 (10%) or a project-appropriate cap. Define the cap as a "
+                    "constant for clarity.",
+                    'Input Validation',
+                )
+
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
