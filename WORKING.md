@@ -1,10 +1,23 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.11.0 | **Detectors:** 81 | **Tests:** 159 (all passing)
+**Version:** 2.12.0 | **Detectors:** 82 | **Tests:** 167 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-14, 14:00)
+## Latest Changes (2026-03-14, 22:00)
+- ✅ Added Missing Emergency Pause Mechanism detector (#82)
+- Detects DeFi contracts with 3+ public financial operations but no
+  pause/circuit-breaker mechanism (is-paused, halted, frozen, etc.)
+- Without a pause, contracts cannot be halted during active exploits —
+  the only response is to race the attacker, which usually fails
+- Recognizes safe patterns: is-paused/halted/frozen/stopped variables,
+  emergency-stop/circuit-breaker/toggle-pause functions
+- MEDIUM severity, Governance category
+- 3 new test contracts: emergency-pause-test/safe/few-ops.clar
+- 8 new tests in tests/test_emergency_pause.py
+- Test suite: 159 → 167 tests, all passing
+
+## Previous Changes (2026-03-14, 14:00)
 - ✅ Added Unprotected Liquidity Withdrawal detector (#81)
 - Detects LP/pool withdraw/remove-liquidity/drain/exit-pool functions that
   transfer funds without proportional share enforcement, time locks, or
@@ -177,7 +190,7 @@
 - 81 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 25 files in `test-contracts/`
+- Test contracts: 28 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
