@@ -289,6 +289,7 @@ class ClarityScanner:
         (79, "check_missing_slippage_protection"),
         (80, "check_stale_oracle_price_dependency"),
         (81, "check_unprotected_liquidity_withdrawal"),
+        (82, "check_missing_emergency_pause"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3211,6 +3212,78 @@ class ClarityScanner:
                 "governance vote before executing.",
                 'DeFi Safety',
             )
+
+    def check_missing_emergency_pause(self):
+        """#82 Detect contracts with financial operations but no emergency pause mechanism.
+
+        DeFi contracts that transfer, mint, or burn tokens should include a
+        pause/circuit-breaker mechanism so operations can be halted during an
+        active exploit. Without a pause, the only response to a hack is to
+        race the attacker — which usually fails.
+        """
+        # Financial operation patterns that indicate a DeFi contract
+        financial_ops = [
+            r'stx-transfer\?',
+            r'(?<!n)ft-transfer\?',
+            r'nft-transfer\?',
+            r'(?<!n)ft-mint\?',
+            r'(?<!n)ft-burn\?',
+        ]
+        # Pause-related variable/function patterns (safe)
+        pause_patterns = [
+            r'is-paused', r'paused', r'contract-paused',
+            r'emergency-stop', r'emergency-shutdown', r'circuit-breaker',
+            r'halted', r'is-halted', r'frozen', r'is-frozen',
+            r'stopped', r'is-stopped', r'is-active', r'is-enabled',
+            r'pause-guard', r'when-not-paused', r'require-not-paused',
+            r'toggle-pause', r'set-paused',
+        ]
+
+        # Count public functions with financial operations
+        financial_funcs = []
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+            for fop in financial_ops:
+                if re.search(fop, body_lower):
+                    financial_funcs.append((func_name, func_start, func_lines))
+                    break
+
+        # Only flag if contract has 3+ financial public functions (real DeFi contract)
+        if len(financial_funcs) < 3:
+            return
+
+        # Check the entire contract for pause mechanisms
+        full_content_lower = self.content.lower()
+        has_pause = any(
+            re.search(pp, full_content_lower) for pp in pause_patterns
+        )
+        if has_pause:
+            return
+
+        # No pause mechanism found — report on the first financial function
+        first_name, first_start, first_lines = financial_funcs[0]
+        func_list = ", ".join(f"\'{fn}\'" for fn, _, _ in financial_funcs[:5])
+        if len(financial_funcs) > 5:
+            func_list += f" (and {len(financial_funcs) - 5} more)"
+
+        self.add_finding(
+            Severity.MEDIUM,
+            "Missing Emergency Pause Mechanism",
+            f"This contract has {len(financial_funcs)} public functions with financial "
+            f"operations ({func_list}) but no pause/circuit-breaker mechanism. "
+            f"During an active exploit, there is no way to halt operations — the "
+            f"only option is to race the attacker, which usually fails. Every DeFi "
+            f"contract should include a pause mechanism for incident response.",
+            first_start + 1,
+            first_lines[0].strip() if first_lines else "",
+            "Add an \'is-paused\' data variable and check it at the start of every "
+            "financial function: (asserts! (not (var-get is-paused)) ERR-PAUSED). "
+            "Include admin-only pause/unpause functions with proper access control. "
+            "Consider adding a time-limited auto-unpause to prevent permanent lockout.",
+            "Governance",
+        )
+
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
