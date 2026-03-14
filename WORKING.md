@@ -1,10 +1,22 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.10.0 | **Detectors:** 80 | **Tests:** 151 (all passing)
+**Version:** 2.11.0 | **Detectors:** 81 | **Tests:** 159 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-14, 06:00)
+## Latest Changes (2026-03-14, 14:00)
+- ✅ Added Unprotected Liquidity Withdrawal detector (#81)
+- Detects LP/pool withdraw/remove-liquidity/drain/exit-pool functions that
+  transfer funds without proportional share enforcement, time locks, or
+  multi-sig authorization — classic rug pull vector
+- Recognizes safe patterns: LP token burn + proportional share calculation,
+  timelock/cooldown block-height checks, multi-sig/governance approval gates
+- HIGH severity, DeFi Safety category
+- New test contract: liquidity-withdrawal-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_liquidity_withdrawal.py
+- Test suite: 151 → 159 tests, all passing
+
+## Previous Changes (2026-03-14, 06:00)
 - ✅ Added Stale Oracle Price Dependency detector (#80)
 - Detects external oracle calls (get-price, get-rate, get-feed, etc.) and price
   variable reads used in financial operations without freshness/staleness validation
@@ -161,11 +173,11 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~2940 lines)
-- 80 detectors registered in `DETECTOR_SPECS` list
+- Single-file scanner: `src/scanner.py` (~3050 lines)
+- 81 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 24 files in `test-contracts/`
+- Test contracts: 25 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
