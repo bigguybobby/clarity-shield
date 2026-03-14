@@ -288,6 +288,7 @@ class ClarityScanner:
         (78, "check_unvalidated_fee_parameter"),
         (79, "check_missing_slippage_protection"),
         (80, "check_stale_oracle_price_dependency"),
+        (81, "check_unprotected_liquidity_withdrawal"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3100,6 +3101,116 @@ class ClarityScanner:
             )
 
 
+    def check_unprotected_liquidity_withdrawal(self):
+        """#81 Detect liquidity pool functions allowing unrestricted fund withdrawal.
+
+        LP/pool contracts that allow withdrawal or removal of liquidity without
+        time locks, proportional share enforcement, or multi-sig authorization
+        are vulnerable to rug pulls. An admin or privileged user can drain the
+        entire pool in a single transaction.
+        """
+        # Function names suggesting liquidity withdrawal
+        withdraw_name_patterns = [
+            'remove-liquidity', 'withdraw-liquidity', 'withdraw',
+            'drain', 'remove-lp', 'burn-lp', 'exit-pool',
+            'redeem', 'withdraw-pool', 'pull-liquidity',
+            'emergency-withdraw', 'admin-withdraw', 'owner-withdraw',
+            'withdraw-all', 'remove-all-liquidity', 'rug',
+        ]
+        # Transfer patterns indicating fund movement
+        transfer_patterns = [
+            r'stx-transfer\?',
+            r'(?<!n)ft-transfer\?',
+            r'contract-call\?\s+\S+\s+transfer',
+        ]
+        # Patterns indicating proportional/share-based withdrawal (safe)
+        proportional_patterns = [
+            r'lp-balance', r'lp-share', r'share-of', r'pool-share',
+            r'user-share', r'proportional', r'pro-rata',
+            r'lp-token', r'lp-amount', r'burn.*lp', r'lp.*burn',
+            r'ft-burn\?.*lp', r'ft-burn\?.*pool', r'ft-burn\?.*share',
+            r'\(var-get\s+[\w-]*total-supply[\w-]*\)',
+            r'user-balance.*total', r'balance.*total-supply',
+            r'share-amount', r'user-lp',
+        ]
+        # Time lock patterns (safe)
+        timelock_patterns = [
+            r'lock-until', r'lock-block', r'unlock-height', r'unlock-block',
+            r'time-lock', r'timelock', r'cooldown', r'lock-period',
+            r'withdrawal-delay', r'min-lock', r'lock-duration',
+            r'asserts!\s+\(>=?\s+block-height\s+',
+            r'asserts!\s+\(<=?\s+\w+[\w-]*lock',
+        ]
+        # Multi-sig or governance patterns (safe)
+        multisig_patterns = [
+            r'multi-sig', r'multisig', r'threshold', r'required-approvals',
+            r'approval-count', r'signers', r'n-of-m',
+            r'governance.*approve', r'proposal.*execute',
+            r'vote-count', r'quorum',
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+            func_name_lower = func_name.lower()
+
+            # Check if function name matches withdrawal patterns
+            is_withdraw_func = any(wp in func_name_lower for wp in withdraw_name_patterns)
+            if not is_withdraw_func:
+                continue
+
+            # Check if function does a token transfer
+            has_transfer = False
+            transfer_line_offset = 0
+            for tp in transfer_patterns:
+                match = re.search(tp, body_lower)
+                if match:
+                    has_transfer = True
+                    matched_pos = match.start()
+                    transfer_line_offset = body_lower[:matched_pos].count('\n')
+                    break
+
+            if not has_transfer:
+                continue
+
+            # Check for proportional/share-based withdrawal
+            has_proportional = any(
+                re.search(pp, body_lower) for pp in proportional_patterns
+            )
+            if has_proportional:
+                continue
+
+            # Check for time lock
+            has_timelock = any(
+                re.search(tp, body_lower) for tp in timelock_patterns
+            )
+            if has_timelock:
+                continue
+
+            # Check for multi-sig / governance
+            has_multisig = any(
+                re.search(mp, body_lower) for mp in multisig_patterns
+            )
+            if has_multisig:
+                continue
+
+            self.add_finding(
+                Severity.HIGH,
+                f"Unprotected Liquidity Withdrawal in '{func_name}'",
+                f"The function '{func_name}' transfers funds without proportional "
+                "share enforcement, time lock, or multi-sig authorization. An admin "
+                "or privileged caller could drain the entire liquidity pool in one "
+                "transaction (rug pull). Even with tx-sender auth checks, a single "
+                "compromised key enables total fund extraction.",
+                func_start + transfer_line_offset + 1,
+                func_lines[transfer_line_offset].strip() if transfer_line_offset < len(func_lines) else '',
+                "Implement proportional withdrawal: require burning LP tokens to "
+                "receive a proportional share of pool assets. Add time locks for "
+                "large withdrawals (asserts! (>= block-height withdrawal-unlock-block)). "
+                "For admin emergency functions, require multi-sig approval or "
+                "governance vote before executing.",
+                'DeFi Safety',
+            )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
