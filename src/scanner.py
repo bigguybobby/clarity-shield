@@ -287,6 +287,7 @@ class ClarityScanner:
         (77, "check_single_step_privilege_transfer"),
         (78, "check_unvalidated_fee_parameter"),
         (79, "check_missing_slippage_protection"),
+        (80, "check_stale_oracle_price_dependency"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -2982,6 +2983,122 @@ class ClarityScanner:
                 "transactions from executing at unfavorable prices.",
                 'DEX Safety',
             )
+    def check_stale_oracle_price_dependency(self):
+        """#80 Detect oracle/price reads without freshness or staleness validation.
+
+        DeFi protocols that consume external price feeds (oracles) must validate
+        that the data is recent. Stale prices can be exploited for arbitrage,
+        unfair liquidations, or mispriced swaps. Attackers can wait for oracle
+        downtime and use outdated prices to drain protocol funds.
+        """
+        # Patterns indicating oracle price reading
+        oracle_call_patterns = [
+            r'contract-call\?\s+\S+\s+get-price',
+            r'contract-call\?\s+\S+\s+get-latest-price',
+            r'contract-call\?\s+\S+\s+read-price',
+            r'contract-call\?\s+\S+\s+fetch-price',
+            r'contract-call\?\s+\S+\s+get-oracle',
+            r'contract-call\?\s+\S+\s+get-feed',
+            r'contract-call\?\s+\S+\s+get-rate',
+            r'contract-call\?\s+\S+\s+get-exchange-rate',
+            r'contract-call\?\s+\S+\s+get-spot',
+            r'contract-call\?\s+\S+\s+price-feed',
+            r'contract-call\?\s+\S+\s+get-twap',
+            r'contract-call\?\s+\S+\s+get-value',
+        ]
+        # Variable reads that suggest price data usage
+        price_var_patterns = [
+            r'\(var-get\s+[\w-]*price[\w-]*\)',
+            r'\(var-get\s+[\w-]*oracle[\w-]*\)',
+            r'\(var-get\s+[\w-]*rate[\w-]*\)',
+            r'\(var-get\s+[\w-]*feed[\w-]*\)',
+        ]
+        # Freshness validation patterns (safe)
+        freshness_patterns = [
+            r'last-updated', r'last-update', r'updated-at', r'update-time',
+            r'timestamp', r'staleness', r'stale', r'freshness',
+            r'max-age', r'max-delay', r'price-age', r'oracle-age',
+            r'block-height.*price', r'price.*block-height',
+            r'update-block', r'last-block', r'price-block',
+            r'heartbeat', r'valid-until', r'expires', r'expiry',
+            r'asserts!\s+\(<=?\s+\(-\s+block-height',
+            r'asserts!\s+\(<\s+\(-\s+block-height',
+            r'asserts!\s+\(>=?\s+\w+[\w-]*\s+\(-\s+block-height',
+        ]
+        # Operations that use prices for critical financial decisions
+        price_usage_patterns = [
+            r'stx-transfer\?',
+            r'(?<!n)ft-transfer\?',
+            r'ft-mint\?',
+            r'ft-burn\?',
+            r'liquidat',
+            r'collateral',
+            r'borrow',
+            r'lend',
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+            body_lower = body.lower()
+
+            # Check if function reads oracle/price data
+            has_oracle_read = False
+            oracle_line_offset = 0
+            matched_pattern_desc = ""
+
+            for op in oracle_call_patterns:
+                match = re.search(op, body_lower)
+                if match:
+                    has_oracle_read = True
+                    matched_pos = match.start()
+                    oracle_line_offset = body_lower[:matched_pos].count('\n')
+                    matched_pattern_desc = "external oracle call"
+                    break
+
+            if not has_oracle_read:
+                for vp in price_var_patterns:
+                    match = re.search(vp, body_lower)
+                    if match:
+                        # Only flag var-get price reads if function also does financial ops
+                        has_financial_op = any(
+                            re.search(pp, body_lower) for pp in price_usage_patterns
+                        )
+                        if has_financial_op:
+                            has_oracle_read = True
+                            matched_pos = match.start()
+                            oracle_line_offset = body_lower[:matched_pos].count('\n')
+                            matched_pattern_desc = "price variable read"
+                            break
+
+            if not has_oracle_read:
+                continue
+
+            # Check for freshness validation
+            has_freshness = any(
+                re.search(fp, body_lower) for fp in freshness_patterns
+            )
+            if has_freshness:
+                continue
+
+            self.add_finding(
+                Severity.HIGH,
+                f"Stale Oracle Price Dependency in '{func_name}'",
+                f"The function '{func_name}' reads {matched_pattern_desc} data "
+                "without validating its freshness or staleness. If the oracle "
+                "stops updating (downtime, congestion, or manipulation), the "
+                "contract will continue using outdated prices. This can be "
+                "exploited for unfair liquidations, mispriced swaps, arbitrage, "
+                "or draining protocol reserves using stale favorable prices.",
+                func_start + oracle_line_offset + 1,
+                func_lines[oracle_line_offset].strip() if oracle_line_offset < len(func_lines) else '',
+                "Add staleness validation: store the last-update block height "
+                "alongside price data and check "
+                "(asserts! (<= (- block-height last-update-block) MAX_STALENESS) "
+                "(err ERR_STALE_PRICE)). Consider using multiple oracle sources "
+                "and implementing a heartbeat check for critical price feeds.",
+                'Oracle Safety',
+            )
+
 
 
 def generate_report(findings: List[Finding], contract_name: str, 
