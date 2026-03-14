@@ -1,10 +1,25 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.9.0 | **Detectors:** 79 | **Tests:** 143 (all passing)
+**Version:** 2.10.0 | **Detectors:** 80 | **Tests:** 151 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-13, 22:00)
+## Latest Changes (2026-03-14, 06:00)
+- ✅ Added Stale Oracle Price Dependency detector (#80)
+- Detects external oracle calls (get-price, get-rate, get-feed, etc.) and price
+  variable reads used in financial operations without freshness/staleness validation
+- Stale prices enable arbitrage, unfair liquidations, and fund draining during
+  oracle downtime or congestion
+- Recognizes safe patterns: last-updated, timestamp, staleness, max-age,
+  block-height delta checks, heartbeat, expiry references
+- Only flags var-get price reads when combined with financial operations
+  (transfers, mints, burns, liquidations) to avoid false positives
+- HIGH severity, Oracle Safety category
+- New test contract: oracle-staleness-test.clar (2 vulnerable + 3 safe functions)
+- 8 new tests in tests/test_oracle_staleness.py
+- Test suite: 143 → 151 tests, all passing
+
+## Previous Changes (2026-03-13, 22:00)
 - ✅ Added Missing Slippage Protection detector (#79)
 - Detects public swap/exchange/trade/convert/buy/sell functions that perform
   token transfers without enforcing a minimum output amount
@@ -146,11 +161,11 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~2830 lines)
-- 79 detectors registered in `DETECTOR_SPECS` list
+- Single-file scanner: `src/scanner.py` (~2940 lines)
+- 80 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 23 files in `test-contracts/`
+- Test contracts: 24 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
