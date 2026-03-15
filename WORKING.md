@@ -1,10 +1,23 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.12.0 | **Detectors:** 82 | **Tests:** 167 (all passing)
+**Version:** 2.13.0 | **Detectors:** 83 | **Tests:** 176 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-14, 22:00)
+## Latest Changes (2026-03-15, 06:00)
+- ✅ Added Mutable Token Metadata detector (#83)
+- Detects SIP-010/SIP-009 metadata functions (get-name, get-symbol,
+  get-decimals, get-token-uri) returning mutable var-get values instead
+  of constants — allows admins to change token identity post-deployment
+  (name spoofing, decimal manipulation, malicious metadata URI injection)
+- Notes when a var-set setter exists, confirming metadata is changeable
+- Suggests define-constant for immutable metadata
+- MEDIUM severity, Token Safety category
+- 2 test contracts: mutable-metadata-test.clar + immutable-metadata-test.clar
+- 9 new tests in tests/test_mutable_metadata.py
+- Test suite: 167 → 176 tests, all passing
+
+## Previous Changes (2026-03-14, 22:00)
 - ✅ Added Missing Emergency Pause Mechanism detector (#82)
 - Detects DeFi contracts with 3+ public financial operations but no
   pause/circuit-breaker mechanism (is-paused, halted, frozen, etc.)
@@ -186,11 +199,11 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~3050 lines)
-- 81 detectors registered in `DETECTOR_SPECS` list
+- Single-file scanner: `src/scanner.py` (~3130 lines)
+- 83 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 28 files in `test-contracts/`
+- Test contracts: 30 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
