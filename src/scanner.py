@@ -290,6 +290,7 @@ class ClarityScanner:
         (80, "check_stale_oracle_price_dependency"),
         (81, "check_unprotected_liquidity_withdrawal"),
         (82, "check_missing_emergency_pause"),
+        (83, "check_mutable_token_metadata"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3283,6 +3284,78 @@ class ClarityScanner:
             "Consider adding a time-limited auto-unpause to prevent permanent lockout.",
             "Governance",
         )
+
+
+    def check_mutable_token_metadata(self):
+        """#83 Detect SIP-010/SIP-009 metadata functions returning mutable var-get values.
+
+        Token metadata functions (get-name, get-symbol, get-decimals, get-token-uri)
+        that return values from data-vars instead of constants allow admins to change
+        token identity post-deployment. An admin could rename a token to impersonate
+        a high-value asset, change decimals to cause display/calculation errors, or
+        modify the token URI to serve malicious metadata.
+        """
+        # Metadata function names per SIP-010 / SIP-009
+        metadata_func_names = [
+            'get-name', 'get-symbol', 'get-decimals', 'get-token-uri',
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('read-only'):
+            # Only check known metadata functions
+            if func_name not in metadata_func_names:
+                continue
+
+            body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Check if the function uses var-get (mutable state)
+            var_get_match = re.search(r'\(var-get\s+([a-zA-Z][a-zA-Z0-9_-]*)\)', body)
+            if not var_get_match:
+                continue
+
+            var_name = var_get_match.group(1)
+
+            # Check if there's a setter for this var anywhere in the contract
+            has_setter = bool(re.search(
+                rf'\(var-set\s+{re.escape(var_name)}\b', self.content
+            ))
+
+            # Find the line number for the var-get usage
+            finding_line = func_start + 1
+            for i, line in enumerate(func_lines):
+                if 'var-get' in line:
+                    finding_line = func_start + i + 1
+                    break
+
+            if has_setter:
+                severity_note = (
+                    f" A var-set for \'{var_name}\' exists in this contract, "
+                    f"confirming the metadata can be changed after deployment."
+                )
+            else:
+                severity_note = (
+                    f" The variable \'{var_name}\' is defined as mutable (data-var) "
+                    f"even though no setter was found in this contract — consider "
+                    f"using define-constant instead."
+                )
+
+            self.add_finding(
+                Severity.MEDIUM,
+                f"Mutable Token Metadata in \'{func_name}\'",
+                f"The \'{func_name}\' metadata function returns a value from the "
+                f"mutable variable \'{var_name}\' instead of a constant. This allows "
+                f"token metadata to be changed after deployment, which can be used "
+                f"to impersonate other tokens (name/symbol spoofing), cause display "
+                f"errors (decimal manipulation), or serve malicious metadata via "
+                f"token URI changes.{severity_note}",
+                finding_line,
+                func_lines[0].strip() if func_lines else "",
+                f"Use \'define-constant\' instead of \'define-data-var\' for token "
+                f"metadata that should not change after deployment. If mutability "
+                f"is intentional (e.g., upgradeable token URI), add governance "
+                f"controls and emit events on changes so wallets and indexers "
+                f"can detect metadata modifications.",
+                "Token Safety",
+            )
 
 
 def generate_report(findings: List[Finding], contract_name: str, 
