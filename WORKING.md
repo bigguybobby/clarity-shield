@@ -1,10 +1,23 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.14.0 | **Detectors:** 84 | **Tests:** 185 (all passing)
+**Version:** 2.15.0 | **Detectors:** 85 | **Tests:** 195 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-15, 14:00)
+## Latest Changes (2026-03-15, 22:00)
+- ✅ Added Missing Minimum Deposit Amount detector (#85)
+- Detects public deposit/stake/provide/add-liquidity functions accepting
+  amount parameters without enforcing a minimum threshold — enables dust
+  attacks: micro-position storage bloat, rounding exploitation, and
+  disproportionate accounting overhead relative to TVL
+- Recognizes safe patterns: asserts! (>= amount MIN-DEPOSIT), min-deposit/
+  min-amount/min-stake constants, dust-threshold variables
+- MEDIUM severity, DeFi Safety category
+- New test contract: minimum-deposit-test.clar (3 vulnerable + 3 safe + 1 non-deposit)
+- 10 new tests in tests/test_minimum_deposit.py
+- Test suite: 185 → 195 tests, all passing
+
+## Previous Changes (2026-03-15, 14:00)
 - ✅ Added Missing Pending Operation Timeout detector (#84)
 - Detects pending/escrow/order/proposal/auction map writes without
   block-height deadline or expiry — locked funds become permanently
