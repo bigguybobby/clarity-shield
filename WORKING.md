@@ -1,10 +1,23 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.13.0 | **Detectors:** 83 | **Tests:** 176 (all passing)
+**Version:** 2.14.0 | **Detectors:** 84 | **Tests:** 185 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-15, 06:00)
+## Latest Changes (2026-03-15, 14:00)
+- ✅ Added Missing Pending Operation Timeout detector (#84)
+- Detects pending/escrow/order/proposal/auction map writes without
+  block-height deadline or expiry — locked funds become permanently
+  inaccessible if the counterparty never confirms/finalizes
+- Recognizes safe patterns: block-height, deadline, expires-at, timeout,
+  valid-until, ttl, time-limit, cancel-after, unlock-height
+- Only flags maps with pending/escrow/order/proposal/bid/auction names
+- HIGH severity, Fund Safety category
+- New test contract: pending-timeout-test.clar (3 vulnerable + 3 safe)
+- 9 new tests in tests/test_pending_timeout.py
+- Test suite: 176 → 185 tests, all passing
+
+## Previous Changes (2026-03-15, 06:00)
 - ✅ Added Mutable Token Metadata detector (#83)
 - Detects SIP-010/SIP-009 metadata functions (get-name, get-symbol,
   get-decimals, get-token-uri) returning mutable var-get values instead
@@ -200,10 +213,10 @@
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~3130 lines)
-- 83 detectors registered in `DETECTOR_SPECS` list
+- 84 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 30 files in `test-contracts/`
+- Test contracts: 31 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
