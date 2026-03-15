@@ -292,6 +292,7 @@ class ClarityScanner:
         (82, "check_missing_emergency_pause"),
         (83, "check_mutable_token_metadata"),
         (84, "check_missing_pending_operation_timeout"),
+        (85, "check_missing_minimum_deposit_amount"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3438,6 +3439,96 @@ class ClarityScanner:
                     f"reclaim funds after the deadline has passed.",
                     "Fund Safety",
                 )
+
+    def check_missing_minimum_deposit_amount(self):
+        """#85 Detect deposit/stake functions without minimum amount enforcement.
+
+        Public functions that accept deposits, stakes, or liquidity without
+        enforcing a minimum threshold are vulnerable to dust attacks:
+        - Thousands of micro-positions bloat storage maps at negligible cost
+        - Rounding errors on tiny amounts can be exploited to extract value
+        - Reward calculations on dust positions may round to zero, wasting gas
+        - Protocol accounting overhead becomes disproportionate to TVL
+        """
+        # Function names that indicate deposit/stake operations
+        deposit_fn_patterns = re.compile(
+            r'(deposit|stake|provide|add-liquidity|add-collateral|supply|lock-tokens|fund)',
+            re.IGNORECASE
+        )
+
+        # Amount parameter patterns
+        amount_param_pattern = re.compile(
+            r'\(([a-zA-Z][-a-zA-Z0-9_]*amount[-a-zA-Z0-9_]*|'
+            r'[a-zA-Z][-a-zA-Z0-9_]*qty[-a-zA-Z0-9_]*|'
+            r'value|tokens|shares)\s+uint\)',
+            re.IGNORECASE
+        )
+
+        # Patterns that indicate a minimum check is present
+        min_check_patterns = re.compile(
+            r'(min[-_]?deposit|min[-_]?amount|min[-_]?stake|min[-_]?value|'
+            r'minimum[-_]?deposit|minimum[-_]?amount|minimum[-_]?stake|'
+            r'dust[-_]?threshold|min[-_]?liquidity|min[-_]?collateral|'
+            r'MIN[-_]?DEPOSIT|MIN[-_]?AMOUNT|MIN[-_]?STAKE)',
+        )
+
+        # Assert patterns checking amount >= some minimum
+        assert_min_patterns = re.compile(
+            r'asserts!\s*\(>=?\s+\S+\s+u[1-9]',
+        )
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            # Only check deposit/stake-like functions
+            if not deposit_fn_patterns.search(func_name):
+                continue
+
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Must have an amount-like parameter
+            func_header = '\n'.join(self._strip_comments(l) for l in func_lines[:5])
+            if not amount_param_pattern.search(func_header):
+                # Also check if there is a generic uint param used with transfer
+                if 'uint' not in func_header:
+                    continue
+
+            # Check if function has transfer operations (stx-transfer?, ft-transfer?, ft-mint?)
+            if not re.search(r'(stx-transfer\?|ft-transfer\?|ft-mint\?|map-set|map-insert)', func_body):
+                continue
+
+            # Skip if minimum check patterns are present
+            if min_check_patterns.search(func_body):
+                continue
+
+            # Skip if there's an assert checking amount >= some minimum
+            if assert_min_patterns.search(func_body):
+                continue
+
+            # Skip if there's a comparison of the amount against a constant
+            if re.search(r'asserts!\s*\(>\s+\S+\s+u0\)', func_body):
+                # > u0 is a zero check, not a minimum — still flag it
+                # unless there is a stronger check
+                if re.search(r'asserts!\s*\(>=?\s+\S+\s+u[1-9][0-9]*\)', func_body):
+                    continue
+
+            self.add_finding(
+                Severity.MEDIUM,
+                f"Missing Minimum Deposit Amount in '{func_name}'",
+                f"The '{func_name}' function accepts deposits or stakes without "
+                f"enforcing a minimum amount threshold. This allows dust attacks "
+                f"where attackers create thousands of micro-positions at negligible "
+                f"cost, bloating storage maps and potentially exploiting rounding "
+                f"errors in reward calculations. Tiny deposits also create "
+                f"disproportionate accounting overhead relative to their economic value.",
+                func_start + 1,
+                func_lines[0].strip() if func_lines else "",
+                f"Add a minimum deposit check: (asserts! (>= amount MIN-DEPOSIT) "
+                f"ERR-BELOW-MINIMUM) where MIN-DEPOSIT is a constant set to a "
+                f"meaningful economic threshold (e.g., u1000000 for 1 STX). "
+                f"Consider also enforcing minimum-position checks on stake/unstake "
+                f"to prevent position fragmentation.",
+                "DeFi Safety",
+            )
+
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
