@@ -291,6 +291,7 @@ class ClarityScanner:
         (81, "check_unprotected_liquidity_withdrawal"),
         (82, "check_missing_emergency_pause"),
         (83, "check_mutable_token_metadata"),
+        (84, "check_missing_pending_operation_timeout"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3357,6 +3358,86 @@ class ClarityScanner:
                 "Token Safety",
             )
 
+
+    def check_missing_pending_operation_timeout(self):
+        """#84 Detect pending/escrow map operations without block-height timeout.
+
+        Contracts that create pending operations (escrow, queued transfers,
+        proposals, orders) by inserting into maps without recording a
+        block-height deadline risk locking funds indefinitely. If the
+        counterparty never confirms or the operation is never finalized,
+        locked assets become permanently inaccessible.
+        """
+        # Patterns that indicate a pending/queued/escrow map
+        pending_map_patterns = re.compile(
+            r'(pending|queued|escrow|locked|order|proposal|request|offer|bid|auction)',
+            re.IGNORECASE
+        )
+
+        # Patterns that indicate a timeout/deadline is present
+        timeout_patterns = re.compile(
+            r'(block-height|burn-block-height|deadline|expires?[-_]?at|timeout|'
+            r'expir[yation]+|unlock[-_]?height|end[-_]?block|valid[-_]?until|'
+            r'ttl|time[-_]?limit|cancel[-_]?after)',
+            re.IGNORECASE
+        )
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Look for map-set or map-insert with pending-style map names
+            map_ops = re.finditer(
+                r'\((map-set|map-insert)\s+([a-zA-Z][a-zA-Z0-9_-]*)',
+                func_body
+            )
+
+            for match in map_ops:
+                op_name = match.group(1)
+                map_name = match.group(2)
+
+                # Only flag maps with pending/escrow-like names
+                if not pending_map_patterns.search(map_name):
+                    continue
+
+                # Check if the function body contains any timeout-related value
+                if timeout_patterns.search(func_body):
+                    continue
+
+                # Also check if the map value tuple contains timeout fields
+                # by looking at the broader context around the map operation
+                op_start = match.start()
+                # Grab up to 500 chars after the map-set/map-insert to see the value
+                value_context = func_body[op_start:op_start + 500]
+                if timeout_patterns.search(value_context):
+                    continue
+
+                # Find the line number
+                finding_line = func_start + 1
+                for i, line in enumerate(func_lines):
+                    stripped = self._strip_comments(line)
+                    if map_name in stripped and (op_name in stripped or
+                            (i > 0 and op_name in self._strip_comments(func_lines[i-1]))):
+                        finding_line = func_start + i + 1
+                        break
+
+                self.add_finding(
+                    Severity.HIGH,
+                    f"Missing Timeout for Pending Operation in '{func_name}'",
+                    f"The '{func_name}' function writes to the '{map_name}' map "
+                    f"using {op_name} without recording a block-height deadline or "
+                    f"expiry timestamp. If the counterparty never completes the "
+                    f"operation (confirm, accept, finalize), any locked funds or "
+                    f"assets become permanently inaccessible. This is especially "
+                    f"dangerous in escrow, auction, and order-book contracts where "
+                    f"users deposit tokens expecting a future settlement.",
+                    finding_line,
+                    func_lines[0].strip() if func_lines else "",
+                    f"Include a block-height deadline in the '{map_name}' map value "
+                    f"(e.g., {{... deadline: (+ block-height u1440)}}), and add a "
+                    f"public cancel/refund function that allows the depositor to "
+                    f"reclaim funds after the deadline has passed.",
+                    "Fund Safety",
+                )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
