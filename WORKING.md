@@ -1,10 +1,24 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.16.0 | **Detectors:** 86 | **Tests:** 205 (all passing)
+**Version:** 2.17.0 | **Detectors:** 87 | **Tests:** 215 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-16, 14:00)
+## Latest Changes (2026-03-16, 22:00)
+- ✅ Added Missing Withdrawal Cooldown detector (#87)
+- Detects public withdraw/unstake/redeem/exit-pool functions in staking/pool
+  contracts that transfer funds without enforcing any time-delay or cooldown
+  since deposit — enables flash-deposit attacks where attacker deposits,
+  manipulates pool state, and immediately withdraws in the same block
+- Only flags contracts with matching deposit/stake functions (DeFi pattern)
+- Recognizes safe patterns: cooldown/lock-period/min-blocks variables,
+  block-height arithmetic vs deposit time, unbonding/vesting/maturity refs
+- HIGH severity, DeFi Safety category
+- New test contract: withdrawal-cooldown-test.clar (2 vulnerable + 4 safe)
+- 10 new tests in tests/test_withdrawal_cooldown.py
+- Test suite: 205 → 215 tests, all passing
+
+## Previous Changes (2026-03-16, 14:00)
 - ✅ Added Unsafe Proportional Calculation detector (#86)
 - Detects public functions dividing by mutable variables (total-supply,
   total-staked, pool-balance, ft-get-supply) without zero-check guards
@@ -240,10 +254,10 @@
 
 ## Architecture
 - Single-file scanner: `src/scanner.py` (~3130 lines)
-- 84 detectors registered in `DETECTOR_SPECS` list
+- 87 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 31 files in `test-contracts/`
+- Test contracts: 32 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
