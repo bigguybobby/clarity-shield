@@ -294,6 +294,7 @@ class ClarityScanner:
         (84, "check_missing_pending_operation_timeout"),
         (85, "check_missing_minimum_deposit_amount"),
         (86, "check_unsafe_proportional_calculation"),
+        (87, "check_missing_withdrawal_cooldown"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3615,6 +3616,95 @@ class ClarityScanner:
                 f"(if (is-eq ({display_divisor}) u0) <initial-deposit-logic> "
                 f"<proportional-calc>). Consider also setting a minimum initial deposit "
                 f"to prevent share inflation attacks.",
+                "DeFi Safety",
+            )
+
+    def check_missing_withdrawal_cooldown(self):
+        """#87 Detect withdraw/unstake functions without time-delay enforcement.
+
+        DeFi staking/pool contracts that allow instant withdrawal after deposit
+        are vulnerable to flash-deposit attacks: an attacker deposits, manipulates
+        pool state (e.g. inflates rewards, shifts vote weight, skews price), and
+        immediately withdraws — all within the same block or consecutive blocks.
+
+        Legitimate staking contracts enforce cooldown/lock periods via block-height
+        checks to ensure depositors have skin in the game for a minimum duration.
+        """
+        full_code = '\n'.join(self._strip_comments(l) for l in self.lines)
+
+        # Only flag contracts that ALSO have deposit-like functions (confirms staking pattern)
+        deposit_fn_pattern = re.compile(
+            r'\(define-public\s+\((deposit|stake|provide|add-liquidity|lock-tokens|enter-pool)',
+            re.IGNORECASE
+        )
+        if not deposit_fn_pattern.search(full_code):
+            return
+
+        # Withdraw-like function names
+        withdraw_fn_names = re.compile(
+            r'^(withdraw|unstake|redeem|remove-liquidity|exit-pool|unlock-tokens|claim-and-withdraw)$',
+            re.IGNORECASE
+        )
+
+        # Transfer patterns — function must actually move funds
+        transfer_pattern = re.compile(
+            r'(stx-transfer\?|ft-transfer\?|contract-call\?.*transfer)',
+            re.IGNORECASE
+        )
+
+        # Safe patterns — any time-delay / cooldown enforcement
+        cooldown_patterns = re.compile(
+            r'(cooldown|lock[-_]?period|min[-_]?blocks|withdrawal[-_]?delay|'
+            r'unlock[-_]?at|locked[-_]?until|earliest[-_]?withdraw|'
+            r'min[-_]?stake[-_]?blocks|min[-_]?lock|vesting|maturity|'
+            r'lock[-_]?duration|time[-_]?lock|lockup|unbonding)',
+            re.IGNORECASE
+        )
+
+        # Block-height arithmetic — comparing stored deposit height to current
+        height_check_pattern = re.compile(
+            r'(block-height\s.*deposit|block-height\s.*stake|block-height\s.*lock|'
+            r'block-height\s.*entry|block-height\s.*start|'
+            r'\(-\s+block-height\s|'
+            r'>=?\s+block-height\s|'
+            r'asserts!.*block-height)',
+            re.IGNORECASE
+        )
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            if not withdraw_fn_names.match(func_name):
+                continue
+
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Must actually transfer funds
+            if not transfer_pattern.search(func_body):
+                continue
+
+            # Check for cooldown references
+            if cooldown_patterns.search(func_body):
+                continue
+
+            # Check for block-height arithmetic (comparing deposit time)
+            if height_check_pattern.search(func_body):
+                continue
+
+            self.add_finding(
+                Severity.HIGH,
+                f"Missing Withdrawal Cooldown in '{func_name}' — Flash Deposit Attack Risk",
+                f"The '{func_name}' function transfers funds without enforcing any "
+                f"time-delay or cooldown period since deposit. This enables flash-deposit "
+                f"attacks where an attacker deposits and withdraws in the same block to "
+                f"manipulate pool state (inflate rewards, shift governance votes, skew "
+                f"price calculations) without genuine economic commitment. Staking pools "
+                f"without lockup periods offer no protection against this attack vector.",
+                func_start + 1,
+                func_lines[0].strip() if func_lines else "",
+                f"Enforce a minimum lock period before withdrawal by storing the deposit "
+                f"block-height and requiring a cooldown: (asserts! (>= (- block-height "
+                f"(get deposit-block position)) MIN-LOCK-PERIOD) ERR-COOLDOWN-ACTIVE). "
+                f"Common lock periods range from 100-2100 blocks (~16 hours to ~2 weeks). "
+                f"Consider implementing a graduated unlock schedule for larger positions.",
                 "DeFi Safety",
             )
 
