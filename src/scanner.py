@@ -293,6 +293,7 @@ class ClarityScanner:
         (83, "check_mutable_token_metadata"),
         (84, "check_missing_pending_operation_timeout"),
         (85, "check_missing_minimum_deposit_amount"),
+        (86, "check_unsafe_proportional_calculation"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3529,6 +3530,93 @@ class ClarityScanner:
                 "DeFi Safety",
             )
 
+
+    def check_unsafe_proportional_calculation(self):
+        """#86 Detect division by mutable variables without zero-check guards.
+
+        DeFi functions that compute proportional shares, rewards, or exchange rates
+        often divide by a mutable total (total-supply, total-assets, pool-balance,
+        total-staked). If that total is zero (empty pool, first deposit, post-drain),
+        the division causes a runtime abort — a permanent denial of service.
+
+        Common exploitable scenarios:
+        - First depositor: pool starts with total-supply = u0, share calc aborts
+        - Post-emergency-drain: all funds withdrawn, reward calc divides by u0
+        - Race condition: last withdrawer takes everything, next TX aborts
+        """
+        # Mutable variables that are commonly used as divisors in proportional calcs
+        divisor_var_patterns = re.compile(
+            r'(total[-_]?supply|total[-_]?assets|total[-_]?deposits|total[-_]?staked|'
+            r'total[-_]?shares|total[-_]?balance|total[-_]?liquidity|total[-_]?pool|'
+            r'pool[-_]?balance|pool[-_]?size|reserve[-_]?balance|total[-_]?weight)',
+            re.IGNORECASE
+        )
+
+        # Division patterns using var-get as divisor (handles nested parens in numerator)
+        div_by_var_pattern = re.compile(
+            r'\(/\s+.+?\(var-get\s+([a-zA-Z][-a-zA-Z0-9_]*)\)',
+            re.DOTALL
+        )
+        # Division by ft-get-supply (token supply as divisor)
+        div_by_ft_supply = re.compile(
+            r'\(/\s+.+?\(ft-get-supply\s+',
+            re.DOTALL
+        )
+
+        # Zero-check guard patterns — broad enough to handle (var-get ...) expressions
+        zero_check_patterns = re.compile(
+            r'(asserts!\s*\(>\s+.+?\s+u0\)|'
+            r'asserts!\s*\(>=\s+.+?\s+u1\)|'
+            r'asserts!\s*\(not\s+\(is-eq\s+.+?\s+u0\)\)|'
+            r'if\s+\(is-eq\s+.+?\s+u0\)|'
+            r'if\s+\(>\s+.+?\s+u0\))',
+        )
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Check for division by var-get with a total-like variable
+            vulnerable_var = None
+            has_division = False
+
+            for m in div_by_var_pattern.finditer(func_body):
+                var_name = m.group(1)
+                if divisor_var_patterns.search(var_name):
+                    vulnerable_var = var_name
+                    has_division = True
+                    break
+
+            # Also check division by ft-get-supply (token supply as divisor)
+            if not has_division and div_by_ft_supply.search(func_body):
+                vulnerable_var = 'ft-get-supply'
+                has_division = True
+
+            if not has_division:
+                continue
+
+            # Check if there's a zero-check guard anywhere in the function
+            if zero_check_patterns.search(func_body):
+                continue
+
+            display_divisor = f"var-get {vulnerable_var}" if vulnerable_var != 'ft-get-supply' else 'ft-get-supply'
+            self.add_finding(
+                Severity.HIGH,
+                f"Unsafe Proportional Calculation in \'{func_name}\' — Division by Zero Risk",
+                f"The \'{func_name}\' function divides by ({display_divisor}) without "
+                f"checking that the divisor is non-zero. When the pool is empty "
+                f"(total is u0), this causes a runtime abort, permanently bricking "
+                f"the function until someone manually seeds the pool. This creates a "
+                f"denial-of-service vulnerability exploitable after emergency drains, "
+                f"on first deposit, or when the last user withdraws everything.",
+                func_start + 1,
+                func_lines[0].strip() if func_lines else "",
+                f"Add a zero-check before division: (asserts! (> ({display_divisor}) u0) "
+                f"ERR-EMPTY-POOL). For first-deposit scenarios, use a conditional branch: "
+                f"(if (is-eq ({display_divisor}) u0) <initial-deposit-logic> "
+                f"<proportional-calc>). Consider also setting a minimum initial deposit "
+                f"to prevent share inflation attacks.",
+                "DeFi Safety",
+            )
 
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
