@@ -1,10 +1,24 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.15.0 | **Detectors:** 85 | **Tests:** 195 (all passing)
+**Version:** 2.16.0 | **Detectors:** 86 | **Tests:** 205 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-15, 22:00)
+## Latest Changes (2026-03-16, 14:00)
+- ✅ Added Unsafe Proportional Calculation detector (#86)
+- Detects public functions dividing by mutable variables (total-supply,
+  total-staked, pool-balance, ft-get-supply) without zero-check guards
+- When pool is empty (total is u0), division causes runtime abort —
+  permanent denial of service exploitable after emergency drains,
+  on first deposit, or when last user withdraws everything
+- Recognizes safe patterns: asserts! (> ... u0) guards, if (is-eq ... u0)
+  conditional branches for initial deposit handling
+- HIGH severity, DeFi Safety category
+- New test contract: proportional-calc-test.clar (3 vulnerable + 4 safe)
+- 10 new tests in tests/test_proportional_calc.py
+- Test suite: 195 → 205 tests, all passing
+
+## Previous Changes (2026-03-15, 22:00)
 - ✅ Added Missing Minimum Deposit Amount detector (#85)
 - Detects public deposit/stake/provide/add-liquidity functions accepting
   amount parameters without enforcing a minimum threshold — enables dust
