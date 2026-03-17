@@ -1,9 +1,25 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.19.0 | **Detectors:** 89 | **Tests:** 235 (all passing)
+**Version:** 2.20.0 | **Detectors:** 90 | **Tests:** 247 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
+## Latest Changes (2026-03-17, 22:00)
+- ✅ Added Unchecked Transfer Return Value detector (#90)
+- Detects stx-transfer?, ft-transfer?, nft-transfer? calls without return value checks
+- When transfer functions are called but return values are not checked with try!, unwrap!,
+  asserts!, or match, the transfer can fail silently while contract logic continues as
+  if it succeeded — enables double-spending, accounting corruption, and fund loss
+- Catches both direct unchecked calls and improper let-binding patterns
+- Recognizes safe patterns: try! auto-propagation, unwrap! with custom errors, asserts!
+  on transfer results, match for custom error handling, let-binding + deferred asserts!
+- HIGH severity, Fund Safety category
+- New test contract: unchecked-transfer-test.clar (3 vulnerable + 5 safe + 1 non-transfer)
+- 12 new tests in tests/test_unchecked_transfer.py
+- Updated DETECTOR_SPECS and README badge: 89 → 90 detectors
+- Test suite: 235 → 247 tests, all passing
+
+## Previous Changes (2026-03-17, 14:00)
 ## Latest Changes (2026-03-17, 14:00)
 - ✅ Added Missing Quorum Validation detector (#89)
 - Detects governance/DAO execute-proposal functions that transfer funds or
