@@ -297,6 +297,7 @@ class ClarityScanner:
         (87, "check_missing_withdrawal_cooldown"),
         (88, "check_unprotected_liquidation"),
         (89, "check_missing_quorum_validation"),
+        (90, "check_unchecked_transfer_return"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3908,6 +3909,97 @@ class ClarityScanner:
                 "Governance",
             )
 
+
+    def check_unchecked_transfer_return(self):
+        """#90 Detect unchecked return values from transfer functions.
+
+        In Clarity, transfer functions (stx-transfer?, ft-transfer?, nft-transfer?)
+        return (response bool uint) to indicate success or failure. If a function
+        calls these transfers but doesn't check the return value with try!, unwrap!,
+        asserts!, or match, the transfer could silently fail and the contract logic
+        will continue as if the transfer succeeded. This can lead to:
+        - Double-spend vulnerabilities (withdrawal succeeds even though transfer failed)
+        - Accounting inconsistencies (balance updated despite failed transfer)
+        - Loss of funds (escrow released even though payment failed)
+
+        Safe implementations must explicitly check transfer results before proceeding
+        with state changes or returning success.
+        """
+        # Transfer function patterns
+        transfer_pattern = re.compile(
+            r'\((stx-transfer\?|ft-transfer\?|nft-transfer\?)\s',
+            re.IGNORECASE
+        )
+
+        # Safe patterns that indicate return value is checked
+        # 1. Wrapped in try! or unwrap! or unwrap-panic
+        # 2. Assigned to a var and then checked with asserts! or match
+        # 3. Used directly in asserts! or match
+        checked_patterns = [
+            re.compile(r'\(try!\s*\((?:stx|ft|nft)-transfer\?', re.IGNORECASE),
+            re.compile(r'\(unwrap!\s*\((?:stx|ft|nft)-transfer\?', re.IGNORECASE),
+            re.compile(r'\(unwrap-panic\s*\((?:stx|ft|nft)-transfer\?', re.IGNORECASE),
+            re.compile(r'\(asserts!\s*\((?:stx|ft|nft)-transfer\?', re.IGNORECASE),
+            re.compile(r'\(match\s+\((?:stx|ft|nft)-transfer\?', re.IGNORECASE),
+            re.compile(r'\(let\s*\(\s*\([^)]*\s+\((?:stx|ft|nft)-transfer\?[^)]*\)\s*\)[^)]*\((?:asserts!|match|try!|unwrap)', re.IGNORECASE),
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Find all transfer calls
+            transfer_matches = list(transfer_pattern.finditer(func_body))
+            
+            if not transfer_matches:
+                continue
+
+            # For each transfer, check if it's wrapped in a checking construct
+            for match in transfer_matches:
+                transfer_pos = match.start()
+                # Get surrounding context (100 chars before and after)
+                context_start = max(0, transfer_pos - 100)
+                context_end = min(len(func_body), transfer_pos + 200)
+                context = func_body[context_start:context_end]
+
+                # Check if any safe pattern matches this context
+                # Additional check: let-binding with later asserts! on is-ok
+                if re.search(r'\(let\s*\(', context, re.IGNORECASE) and \
+                   re.search(r'\(asserts!.*is-ok', context, re.IGNORECASE | re.DOTALL):
+                    is_checked = True
+                else:
+                    is_checked = any(pattern.search(context) for pattern in checked_patterns)
+
+                if not is_checked:
+                    # Find the actual line within the function for better reporting
+                    lines_before_match = func_body[:transfer_pos].count('\n')
+                    actual_line = func_start + lines_before_match + 1
+                    
+                    transfer_type = match.group(1)
+                    
+                    self.add_finding(
+                        Severity.HIGH,
+                        f"Unchecked Transfer Return Value in '{func_name}' — Silent Failure Risk",
+                        f"The function '{func_name}' calls '{transfer_type}' without checking "
+                        f"the return value. In Clarity, transfer functions return (response bool uint) "
+                        f"to indicate success or failure. If the transfer fails (e.g., insufficient "
+                        f"balance, frozen account, invalid recipient), the contract will continue "
+                        f"executing as if the transfer succeeded. This can lead to double-spending "
+                        f"(withdrawals succeed even when transfer fails), accounting inconsistencies "
+                        f"(balances updated despite failed transfers), or loss of funds (escrow "
+                        f"released even when payment fails). Attackers can exploit this by forcing "
+                        f"transfers to fail while still receiving state updates in their favor.",
+                        actual_line,
+                        func_lines[lines_before_match].strip() if lines_before_match < len(func_lines) else "",
+                        f"Wrap all transfer calls in error-checking constructs: "
+                        f"(1) Use try!: (try! (stx-transfer? amt sender recipient) ERR-TRANSFER-FAILED) — "
+                        f"automatically propagates errors up the call stack. "
+                        f"(2) Use unwrap!: (unwrap! (ft-transfer? token amt sender recipient) ERR-TRANSFER) — "
+                        f"aborts with custom error on failure. "
+                        f"(3) Use match for custom error handling: "
+                        f"(match (nft-transfer? token-id sender recipient) success-branch error-branch). "
+                        f"(4) Never ignore transfer return values — treat them as critical security checks.",
+                        "Fund Safety",
+                    )
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -4263,5 +4355,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# Injected below the class — need to add inside the class instead
