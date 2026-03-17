@@ -1,10 +1,25 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.17.0 | **Detectors:** 87 | **Tests:** 215 (all passing)
+**Version:** 2.18.0 | **Detectors:** 88 | **Tests:** 225 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-16, 22:00)
+## Latest Changes (2026-03-17, 06:00)
+- ✅ Added Unprotected Liquidation detector (#88)
+- Detects public liquidate/force-close/margin-call/seize-collateral functions
+  that transfer funds without oracle manipulation safeguards (deviation caps,
+  TWAP pricing, multi-oracle validation, grace periods, health factor checks)
+- Attackers can temporarily manipulate price oracles via flash loans or DEX
+  manipulation to trigger unfair liquidations of healthy positions
+- Only flags contracts with price/oracle usage (lending/margin pattern)
+- Recognizes safe patterns: price-deviation, twap, multi-oracle, grace-period,
+  health-factor, min-collateral-ratio, circuit-breaker, price-band
+- HIGH severity, DeFi Safety category
+- New test contract: liquidation-test.clar (2 vulnerable + 4 safe + 1 non-liquidation)
+- 10 new tests in tests/test_liquidation.py
+- Test suite: 215 → 225 tests, all passing
+
+## Previous Changes (2026-03-16, 22:00)
 - ✅ Added Missing Withdrawal Cooldown detector (#87)
 - Detects public withdraw/unstake/redeem/exit-pool functions in staking/pool
   contracts that transfer funds without enforcing any time-delay or cooldown
@@ -253,7 +268,7 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~3130 lines)
+- Single-file scanner: `src/scanner.py` (~4170 lines)
 - 87 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
