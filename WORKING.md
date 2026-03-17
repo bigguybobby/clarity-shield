@@ -1,10 +1,25 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.18.0 | **Detectors:** 88 | **Tests:** 225 (all passing)
+**Version:** 2.19.0 | **Detectors:** 89 | **Tests:** 235 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-17, 06:00)
+## Latest Changes (2026-03-17, 14:00)
+- ✅ Added Missing Quorum Validation detector (#89)
+- Detects governance/DAO execute-proposal functions that transfer funds or
+  change state without verifying a minimum quorum of voters participated
+- Without quorum enforcement, an attacker can wait for low participation
+  periods and pass malicious proposals with minimal votes (low-turnout attack)
+- Only flags contracts with governance maps (vote/ballot/tally/poll patterns)
+- Recognizes safe patterns: quorum, min-votes, minimum-votes, participation-threshold,
+  vote-threshold, min-turnout, required-votes, enough-votes
+- HIGH severity, Governance category
+- New test contract: quorum-test.clar (2 vulnerable + 3 safe + 1 non-exec)
+- 10 new tests in tests/test_quorum_validation.py
+- Updated README badge and features section: 70 → 89 detectors
+- Test suite: 225 → 235 tests, all passing
+
+## Previous Changes (2026-03-17, 06:00)
 - ✅ Added Unprotected Liquidation detector (#88)
 - Detects public liquidate/force-close/margin-call/seize-collateral functions
   that transfer funds without oracle manipulation safeguards (deviation caps,
@@ -268,11 +283,11 @@
 - ⚠️ Xcode license not accepted — `/usr/bin/git` fails. Workaround: `/Library/Developer/CommandLineTools/usr/bin/git`. Need `sudo xcodebuild -license accept`
 
 ## Architecture
-- Single-file scanner: `src/scanner.py` (~4170 lines)
-- 87 detectors registered in `DETECTOR_SPECS` list
+- Single-file scanner: `src/scanner.py` (~4270 lines)
+- 89 detectors registered in `DETECTOR_SPECS` list
 - Config: TOML/YAML support with per-detector enable/disable
 - Output: JSON, Markdown, HTML, SARIF
-- Test contracts: 32 files in `test-contracts/`
+- Test contracts: 33 files in `test-contracts/`
 - CI: GitHub Actions (pytest + CLI smoke test on 3 Python versions)
 
 ## Next Improvements (Priority)
