@@ -295,6 +295,7 @@ class ClarityScanner:
         (85, "check_missing_minimum_deposit_amount"),
         (86, "check_unsafe_proportional_calculation"),
         (87, "check_missing_withdrawal_cooldown"),
+        (88, "check_unprotected_liquidation"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3705,6 +3706,112 @@ class ClarityScanner:
                 f"(get deposit-block position)) MIN-LOCK-PERIOD) ERR-COOLDOWN-ACTIVE). "
                 f"Common lock periods range from 100-2100 blocks (~16 hours to ~2 weeks). "
                 f"Consider implementing a graduated unlock schedule for larger positions.",
+                "DeFi Safety",
+            )
+
+    def check_unprotected_liquidation(self):
+        """#88 Detect liquidation functions without price manipulation safeguards.
+
+        DeFi lending/margin contracts with liquidation functions that rely on a single
+        price source without deviation caps, grace periods, or multi-oracle validation
+        are vulnerable to oracle manipulation attacks. An attacker can temporarily skew
+        the price (via flash loans, DEX manipulation, or oracle front-running) to trigger
+        unfair liquidations of healthy positions, seizing collateral at a discount.
+
+        Safe liquidation implementations include: price deviation bounds, TWAP/time-weighted
+        prices, multi-oracle median, grace periods before liquidation, and maximum
+        liquidation discounts.
+        """
+        full_code = '\n'.join(self._strip_comments(l) for l in self.lines)
+
+        # Only flag contracts with price/oracle references (lending/margin pattern)
+        price_usage = re.compile(
+            r'(get-price|oracle|price-feed|get-rate|get-exchange-rate|'
+            r'collateral[-_]?ratio|loan[-_]?to[-_]?value|ltv)',
+            re.IGNORECASE
+        )
+        if not price_usage.search(full_code):
+            return
+
+        # Liquidation function names
+        liquidation_fn_names = re.compile(
+            r'^(liquidate|liquidation|force-close|margin-call|'
+            r'seize[-_]?collateral|close[-_]?position|force[-_]?repay|'
+            r'liquidate[-_]?position|liquidate[-_]?loan|execute[-_]?liquidation)$',
+            re.IGNORECASE
+        )
+
+        # Transfer patterns — function must actually move funds/collateral
+        transfer_pattern = re.compile(
+            r'(stx-transfer\?|ft-transfer\?|nft-transfer\?|contract-call\?.*transfer)',
+            re.IGNORECASE
+        )
+
+        # Safe patterns — price manipulation protections
+        safe_patterns = re.compile(
+            r'(price[-_]?deviation|max[-_]?deviation|deviation[-_]?threshold|'
+            r'twap|time[-_]?weighted|price[-_]?average|moving[-_]?average|'
+            r'multi[-_]?oracle|oracle[-_]?count|median[-_]?price|'
+            r'grace[-_]?period|liquidation[-_]?delay|cooldown|'
+            r'max[-_]?discount|liquidation[-_]?bonus|max[-_]?penalty|'
+            r'price[-_]?staleness|price[-_]?freshness|last[-_]?updated|'
+            r'circuit[-_]?breaker|price[-_]?band|price[-_]?cap|'
+            r'min[-_]?collateral[-_]?ratio|health[-_]?factor)',
+            re.IGNORECASE
+        )
+
+        # Health/ratio check — verifies position is actually undercollateralized
+        health_check = re.compile(
+            r'(asserts!.*collateral.*ratio|asserts!.*health|asserts!.*ltv|'
+            r'asserts!.*under[-_]?collateral|'
+            r'if.*collateral.*ratio|if.*health[-_]?factor)',
+            re.IGNORECASE
+        )
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            if not liquidation_fn_names.match(func_name):
+                continue
+
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Must actually transfer funds/collateral
+            if not transfer_pattern.search(func_body):
+                continue
+
+            # Check for price manipulation safeguards
+            if safe_patterns.search(func_body):
+                continue
+
+            # Determine severity based on whether health check exists
+            has_health_check = bool(health_check.search(func_body))
+            severity = Severity.HIGH if not has_health_check else Severity.MEDIUM
+
+            health_note = ""
+            if not has_health_check:
+                health_note = (
+                    " Additionally, no collateral ratio or health factor validation "
+                    "was detected — the function may liquidate positions without verifying "
+                    "they are actually undercollateralized."
+                )
+
+            self.add_finding(
+                severity,
+                f"Unprotected Liquidation in \'{func_name}\' — Oracle Manipulation Risk",
+                f"The \'{func_name}\' function performs liquidation (transfers collateral) "
+                f"without price manipulation safeguards such as deviation caps, TWAP/time-weighted "
+                f"pricing, multi-oracle validation, or liquidation grace periods. An attacker can "
+                f"temporarily manipulate the price oracle (via flash loans, DEX pool manipulation, "
+                f"or oracle front-running) to trigger unfair liquidations of healthy positions, "
+                f"seizing collateral at a steep discount.{health_note}",
+                func_start + 1,
+                func_lines[0].strip() if func_lines else "",
+                f"Implement multiple layers of liquidation protection: (1) Use TWAP or multi-oracle "
+                f"median pricing instead of spot price. (2) Add a price deviation cap — reject "
+                f"liquidations when price moved >X% in a short period. (3) Enforce a grace period "
+                f"allowing borrowers to add collateral before seizure. (4) Cap the liquidation "
+                f"discount/bonus to prevent excessive profit extraction. (5) Verify the position "
+                f"is genuinely undercollateralized: (asserts! (< collateral-ratio MIN-RATIO) "
+                f"ERR-POSITION-HEALTHY).",
                 "DeFi Safety",
             )
 
