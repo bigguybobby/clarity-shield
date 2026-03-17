@@ -296,6 +296,7 @@ class ClarityScanner:
         (86, "check_unsafe_proportional_calculation"),
         (87, "check_missing_withdrawal_cooldown"),
         (88, "check_unprotected_liquidation"),
+        (89, "check_missing_quorum_validation"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -3813,6 +3814,98 @@ class ClarityScanner:
                 f"is genuinely undercollateralized: (asserts! (< collateral-ratio MIN-RATIO) "
                 f"ERR-POSITION-HEALTHY).",
                 "DeFi Safety",
+            )
+
+
+    def check_missing_quorum_validation(self):
+        """#89 Detect governance execution without quorum validation.
+
+        DAO/governance contracts that execute proposals (transferring funds, changing
+        parameters, upgrading contracts) without verifying that a minimum quorum of
+        voters participated are vulnerable to low-turnout attacks. An attacker can
+        wait for low participation periods (holidays, off-hours) and pass malicious
+        proposals with minimal votes.
+
+        Safe governance implementations enforce minimum quorum thresholds: a minimum
+        number or percentage of total voting power must participate before a proposal
+        can be executed.
+        """
+        full_code = '\n'.join(self._strip_comments(l) for l in self.lines)
+
+        # Only flag contracts with governance/proposal patterns
+        governance_pattern = re.compile(
+            r'(proposal|governance|voting|ballot|referendum|dao)',
+            re.IGNORECASE
+        )
+        if not governance_pattern.search(full_code):
+            return
+
+        # Must have vote tracking (map with vote/ballot/tally references)
+        vote_tracking = re.compile(
+            r'(define-map\s+\S*(vote|ballot|tally|poll))',
+            re.IGNORECASE
+        )
+        if not vote_tracking.search(full_code):
+            return
+
+        # Execution function names
+        execute_fn_names = re.compile(
+            r'^(execute[-_]?proposal|finalize[-_]?proposal|conclude[-_]?vote|'
+            r'execute[-_]?vote|settle[-_]?proposal|enact[-_]?proposal|'
+            r'process[-_]?proposal|close[-_]?vote|resolve[-_]?proposal|'
+            r'execute|finalize|conclude|enact)$',
+            re.IGNORECASE
+        )
+
+        # Transfer/state-change patterns — must do something consequential
+        consequential_action = re.compile(
+            r'(stx-transfer\?|ft-transfer\?|nft-transfer\?|contract-call\?|'
+            r'var-set|map-set|map-delete)',
+            re.IGNORECASE
+        )
+
+        # Safe patterns — quorum validation
+        quorum_patterns = re.compile(
+            r'(quorum|min[-_]?votes|minimum[-_]?votes|min[-_]?participation|'
+            r'vote[-_]?threshold|min[-_]?turnout|required[-_]?votes|'
+            r'min[-_]?voters|participation[-_]?threshold|vote[-_]?count.*>=|'
+            r'total[-_]?votes.*>=|enough[-_]?votes)',
+            re.IGNORECASE
+        )
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            if not execute_fn_names.match(func_name):
+                continue
+
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            # Must perform consequential action
+            if not consequential_action.search(func_body):
+                continue
+
+            # Check for quorum validation
+            if quorum_patterns.search(func_body):
+                continue
+
+            self.add_finding(
+                Severity.HIGH,
+                f"Missing Quorum Validation in '{func_name}' — Low-Turnout Attack Risk",
+                f"The '{func_name}' function executes a governance proposal (performs "
+                f"state changes or transfers) without verifying that a minimum quorum "
+                f"of voters participated. Without quorum enforcement, an attacker can "
+                f"wait for low participation periods and pass malicious proposals with "
+                f"a tiny fraction of total voting power. This enables unauthorized fund "
+                f"transfers, parameter changes, or contract upgrades with minimal opposition.",
+                func_start + 1,
+                func_lines[0].strip() if func_lines else "",
+                f"Add quorum validation before executing any proposal: "
+                f"(1) Track total votes cast per proposal. "
+                f"(2) Define a minimum quorum constant (e.g., 10-30%% of total supply): "
+                f"(define-constant QUORUM-THRESHOLD u1000000). "
+                f"(3) Assert quorum is met before execution: "
+                f"(asserts! (>= (var-get total-votes-cast) QUORUM-THRESHOLD) ERR-QUORUM-NOT-MET). "
+                f"(4) Consider both vote count AND voting power thresholds for robust governance.",
+                "Governance",
             )
 
 def generate_report(findings: List[Finding], contract_name: str, 

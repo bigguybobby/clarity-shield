@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/bigguybobby/clarity-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/bigguybobby/clarity-shield/actions/workflows/ci.yml)
-[![Detectors: 70](https://img.shields.io/badge/detectors-70-brightgreen)](docs/)
+[![Detectors: 89](https://img.shields.io/badge/detectors-89-brightgreen)](docs/)
 [![Stacks](https://img.shields.io/badge/Stacks-Blockchain-5546FF)](https://www.stacks.co/)
 
 **Automated security scanner for Clarity smart contracts on the Stacks blockchain**
@@ -22,7 +22,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
 
 ## ✨ Features
 
-- 🔍 **70 Vulnerability Detectors**:
+- 🔍 **89 Vulnerability Detectors**:
   - Authorization bypass via `contract-caller` misuse
   - Missing access control checks on public functions
   - Unsafe `unwrap!` / `unwrap-panic` usage (DoS vectors)
