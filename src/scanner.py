@@ -298,6 +298,7 @@ class ClarityScanner:
         (88, "check_unprotected_liquidation"),
         (89, "check_missing_quorum_validation"),
         (90, "check_unchecked_transfer_return"),
+        (91, "check_signature_replay"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -4000,6 +4001,83 @@ class ClarityScanner:
                         f"(4) Never ignore transfer return values — treat them as critical security checks.",
                         "Fund Safety",
                     )
+    def check_signature_replay(self):
+        """#91 Detect signature verification without replay protection.
+
+        In Clarity, secp256k1-recover? and secp256k1-verify allow contracts to
+        verify off-chain signatures. However, if the contract doesn't track which
+        signatures have been used (via nonces, used-signature maps, or sequence
+        numbers), the same valid signature can be submitted multiple times to
+        replay the action. This enables:
+        - Double-spending (same withdrawal signature replayed)
+        - Duplicate vote counting (governance signatures replayed)
+        - Repeated reward claims (claim signature replayed after each epoch)
+
+        Safe implementations must include nonce tracking, used-signature maps,
+        or sequence number validation to prevent replay attacks.
+        """
+        # Signature verification patterns
+        sig_pattern = re.compile(
+            r'\((secp256k1-recover\?|secp256k1-verify)\s',
+            re.IGNORECASE
+        )
+
+        # Safe patterns indicating replay protection
+        replay_guard_patterns = [
+            re.compile(r'nonce', re.IGNORECASE),
+            re.compile(r'used-signature', re.IGNORECASE),
+            re.compile(r'processed-signature', re.IGNORECASE),
+            re.compile(r'consumed-signature', re.IGNORECASE),
+            re.compile(r'seen-hash', re.IGNORECASE),
+            re.compile(r'replay', re.IGNORECASE),
+            re.compile(r'sequence', re.IGNORECASE),
+            re.compile(r'msg-id', re.IGNORECASE),
+            re.compile(r'action-id', re.IGNORECASE),
+        ]
+
+        for func_name, func_start, _, func_lines in self._iter_function_blocks('public'):
+            func_body = '\n'.join(self._strip_comments(l) for l in func_lines)
+
+            sig_matches = list(sig_pattern.finditer(func_body))
+            if not sig_matches:
+                continue
+
+            # Check if function body references any replay guard pattern
+            func_has_guard = any(p.search(func_body) for p in replay_guard_patterns)
+
+            if func_has_guard:
+                continue
+
+            # Found signature verification without replay protection
+            first_match = sig_matches[0]
+            lines_before = func_body[:first_match.start()].count('\n')
+            actual_line = func_start + lines_before + 1
+            sig_func = first_match.group(1)
+
+            self.add_finding(
+                Severity.HIGH,
+                f"Signature Replay Vulnerability in \'{func_name}\' — Missing Nonce/Replay Guard",
+                f"The function \'{func_name}\' uses \'{sig_func}\' to verify off-chain "
+                f"signatures but has no replay protection mechanism. Without nonce tracking, "
+                f"used-signature maps, or sequence number validation, the same valid signature "
+                f"can be submitted multiple times to repeat the action. Attackers can replay "
+                f"withdrawal authorizations to drain funds, replay governance votes to skew "
+                f"outcomes, or replay reward claims to extract more than their share. "
+                f"The contract has no map or variable tracking used signatures or nonces.",
+                actual_line,
+                func_lines[lines_before].strip() if lines_before < len(func_lines) else "",
+                f"Implement replay protection: "
+                f"(1) Nonce tracking: maintain a per-user nonce map, include the nonce in the "
+                f"signed message, and increment after each use. "
+                f"(2) Used-signature map: store each signature hash after first use and reject "
+                f"duplicates with (asserts! (is-none (map-get? used-signatures sig)) ERR-REPLAY). "
+                f"(3) Sequence numbers: require monotonically increasing sequence numbers in "
+                f"signed messages and track the last-used sequence per user. "
+                f"(4) Include contract address and chain-id in signed data to prevent cross-contract "
+                f"and cross-chain replay.",
+                "Cryptographic Safety",
+            )
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""

@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/bigguybobby/clarity-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/bigguybobby/clarity-shield/actions/workflows/ci.yml)
-[![Detectors: 90](https://img.shields.io/badge/detectors-90-brightgreen)](docs/)
+[![Detectors: 91](https://img.shields.io/badge/detectors-91-brightgreen)](docs/)
 [![Stacks](https://img.shields.io/badge/Stacks-Blockchain-5546FF)](https://www.stacks.co/)
 
 **Automated security scanner for Clarity smart contracts on the Stacks blockchain**
