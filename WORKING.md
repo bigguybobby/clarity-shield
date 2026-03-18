@@ -1,10 +1,25 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.20.0 | **Detectors:** 90 | **Tests:** 247 (all passing)
+**Version:** 2.21.0 | **Detectors:** 91 | **Tests:** 258 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-17, 22:00)
+## Latest Changes (2026-03-18, 06:00)
+- ✅ Added Signature Replay Vulnerability detector (#91)
+- Detects secp256k1-recover?/secp256k1-verify usage in public functions
+  without replay protection (nonce maps, used-signature tracking, sequence numbers)
+- Without replay guards, valid signatures can be resubmitted to repeat
+  withdrawals, governance votes, or reward claims — classic crypto attack vector
+- Recognizes safe patterns: nonce tracking maps, used-signatures maps,
+  sequence number variables, replay/msg-id/action-id references
+- Only flags public functions (read-only signature checks are safe)
+- HIGH severity, Cryptographic Safety category
+- New test contract: signature-replay-test.clar (2 vulnerable + 5 safe functions)
+- 11 new tests in tests/test_signature_replay.py
+- Updated README badge: 90 → 91 detectors
+- Test suite: 247 → 258 tests, all passing
+
+## Previous Changes (2026-03-17, 22:00)
 - ✅ Added Unchecked Transfer Return Value detector (#90)
 - Detects stx-transfer?, ft-transfer?, nft-transfer? calls without return value checks
 - When transfer functions are called but return values are not checked with try!, unwrap!,
