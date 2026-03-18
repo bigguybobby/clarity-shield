@@ -299,6 +299,8 @@ class ClarityScanner:
         (89, "check_missing_quorum_validation"),
         (90, "check_unchecked_transfer_return"),
         (91, "check_signature_replay"),
+        (92, "check_unvalidated_oracle_update"),
+        (93, "check_unsafe_at_block_usage"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -4078,6 +4080,165 @@ class ClarityScanner:
                 "Cryptographic Safety",
             )
 
+    def check_unvalidated_oracle_update(self):
+        """#92 Detect price oracle updates without safety controls.
+
+        Oracle price manipulation is a critical attack vector in DeFi. When
+        set-price/update-price/set-rate functions allow arbitrary price updates
+        without proper controls, a compromised oracle admin or exploited update
+        mechanism can instantly manipulate prices to:
+        - Drain lending protocols via unfair liquidations
+        - Enable arbitrage attacks by setting fake exchange rates
+        - Steal collateral by manipulating collateralization ratios
+
+        Safe implementations must include at least one of:
+        - Deviation bounds (max % change from current price)
+        - Timelock delays (proposal + execution with waiting period)
+        - Multi-signature requirements (2+ confirmations)
+        - Quorum voting for oracle updates
+        """
+        # Oracle update function name patterns
+        oracle_update_pattern = re.compile(
+            r'^('
+            r'set-price|update-price|set-rate|update-rate|'
+            r'set-oracle|update-oracle|set-feed|update-feed|'
+            r'set-btc-price|set-eth-price|set-stx-price|'
+            r'update-btc-price|update-eth-price|update-stx-price'
+            r')$',
+            re.IGNORECASE
+        )
+        # Safe control patterns
+        deviation_patterns = [
+            re.compile(r'deviation', re.IGNORECASE),
+            re.compile(r'max-change', re.IGNORECASE),
+            re.compile(r'price-band', re.IGNORECASE),
+            re.compile(r'max-diff', re.IGNORECASE),
+            re.compile(r'bounds', re.IGNORECASE),
+        ]
+
+        timelock_patterns = [
+            re.compile(r'timelock', re.IGNORECASE),
+            re.compile(r'delay', re.IGNORECASE),
+            re.compile(r'proposal-time', re.IGNORECASE),
+            re.compile(r'propose-price', re.IGNORECASE),
+            re.compile(r'execute-price', re.IGNORECASE),
+            re.compile(r'pending-price', re.IGNORECASE),
+        ]
+
+        multisig_patterns = [
+            re.compile(r'confirmations?', re.IGNORECASE),
+            re.compile(r'multi-?sig', re.IGNORECASE),
+            re.compile(r'signers?', re.IGNORECASE),
+            re.compile(r'approvals?', re.IGNORECASE),
+            re.compile(r'threshold', re.IGNORECASE),
+        ]
+
+        # Scan for vulnerable oracle update functions
+        for fn_name, fn_start, _, fn_lines in self._iter_function_blocks('public'):
+            fn_body = "\n".join(fn_lines)
+
+            # Only check functions with oracle update naming
+            if not oracle_update_pattern.match(fn_name):
+                continue
+
+            # Check for safety controls
+            has_deviation = any(p.search(fn_body) for p in deviation_patterns)
+            has_timelock = any(p.search(fn_body) for p in timelock_patterns)
+            has_multisig = any(p.search(fn_body) for p in multisig_patterns)
+
+            if not (has_deviation or has_timelock or has_multisig):
+                self.add_finding(
+                    severity=Severity.HIGH,
+                    title="Unvalidated Oracle Price Update",
+                    description=(
+                        f"Function '{fn_name}' updates oracle price/rate without safety controls. "
+                        f"A compromised admin or exploited update mechanism can manipulate prices "
+                        f"to drain funds via unfair liquidations, enable arbitrage attacks, or "
+                        f"steal collateral."
+                    ),
+                    line=fn_start + 1,
+                    code_snippet=fn_body[:200],
+                    recommendation=(
+                        "Add safety controls: (1) deviation bounds to limit max price changes, "
+                        "(2) timelock delay with propose/execute pattern, or "
+                        "(3) multi-signature requirement with confirmation threshold."
+                    ),
+                    category="Oracle Safety"
+                )
+
+
+
+    def check_unsafe_at_block_usage(self):
+        """#93 Detect unsafe at-block usage with user-supplied block hashes.
+
+        The Clarity `(at-block <block-hash> <expr>)` builtin evaluates an
+        expression in the context of a historical block.  When a public
+        function accepts a block hash from the caller and passes it directly
+        to `at-block` without validation, an attacker can:
+        - Read historical state to bypass current security checks
+        - Exploit time-dependent logic (vesting, lock-up, price feeds)
+        - Manipulate balance snapshots used in governance voting
+
+        Safe patterns include:
+        - Using stored/trusted block hashes (var-get) instead of parameters
+        - Restricting usage to read-only functions (no state mutation risk)
+        - Validating the block height is within an acceptable range (recency)
+        - Keeping at-block in private helper functions only
+        """
+        at_block_re = re.compile(r'\(at-block\b')
+
+        # Patterns indicating the block hash is validated or safe
+        validation_patterns = [
+            re.compile(r'asserts!.*block-height', re.IGNORECASE),
+            re.compile(r'asserts!.*block-height', re.IGNORECASE),
+            re.compile(r'unwrap!.*block-height', re.IGNORECASE),
+            re.compile(r'>.*block-height', re.IGNORECASE),
+            re.compile(r'<.*block-height', re.IGNORECASE),
+            re.compile(r'>=.*block-height', re.IGNORECASE),
+            re.compile(r'<=.*block-height', re.IGNORECASE),
+        ]
+
+        # Check: at-block using var-get (trusted source) is safe
+        trusted_hash_re = re.compile(r'\(at-block\s+\(var-get\b')
+
+        for fn_name, fn_start, _, fn_lines in self._iter_function_blocks('public'):
+            fn_body = "\n".join(fn_lines)
+
+            # Skip if no at-block usage
+            if not at_block_re.search(fn_body):
+                continue
+
+            # Safe: at-block uses a stored/trusted block hash via var-get
+            if trusted_hash_re.search(fn_body):
+                continue
+
+            # Safe: function validates block height before at-block
+            has_validation = any(p.search(fn_body) for p in validation_patterns)
+            if has_validation:
+                continue
+
+            self.add_finding(
+                severity=Severity.MEDIUM,
+                title="Unsafe at-block with User-Supplied Hash",
+                description=(
+                    f"Public function '{fn_name}' uses (at-block) with a "
+                    f"caller-supplied block hash without validation. An attacker "
+                    f"can pass arbitrary historical block hashes to read stale "
+                    f"state, bypass current security checks, or manipulate "
+                    f"time-dependent logic (vesting, voting snapshots, price feeds)."
+                ),
+                line=fn_start + 1,
+                code_snippet=fn_body[:200],
+                recommendation=(
+                    "Validate the block hash: (1) use a stored/trusted hash via "
+                    "(var-get) instead of accepting user input, (2) verify the "
+                    "block height is within an acceptable recency window, or "
+                    "(3) restrict at-block usage to read-only functions."
+                ),
+                category="State Safety"
+            )
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
@@ -4433,3 +4594,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

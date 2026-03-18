@@ -18,4 +18,3 @@
 - 9 new tests in tests/test_oracle_update.py
 - Updated DETECTOR_SPECS: 91 → 92 detectors
 - Test suite: 258 → 267 tests, all passing
-
