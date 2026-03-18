@@ -1,21 +1,22 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.22.0 | **Detectors:** 92 | **Tests:** 267 (all passing)
+**Version:** 2.23.0 | **Detectors:** 93 | **Tests:** 277 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-18, 14:00)
-- ✅ Added Unvalidated Oracle Price Update detector (#92)
-- Detects set-price/update-price/set-rate/update-oracle/update-btc-price
-  functions without safety controls (deviation bounds, timelocks, or multi-sig)
-- Without controls, compromised oracle admin can manipulate prices instantly
-  to drain DeFi protocols via unfair liquidations, arbitrage, or collateral theft
-- Recognizes safe patterns: deviation/bounds/max-change constants, timelock
-  propose/execute patterns with block-height delays, multi-sig confirmations
-- Only flags functions with oracle naming patterns (set-price, update-rate, etc.)
-- HIGH severity, Oracle Safety category
-- New test contract: oracle-update-test.clar (2 vulnerable + 3 safe + 1 non-oracle)
-- 9 new tests in tests/test_oracle_update.py
-- Updated DETECTOR_SPECS: 91 → 92 detectors
-- Test suite: 258 → 267 tests, all passing
+## Latest Changes (2026-03-18, 22:00)
+- ✅ Added Unsafe at-block Usage detector (#93)
+- Detects public functions using (at-block) with caller-supplied block hashes
+  without validation — attackers can read stale state, bypass checks, or
+  manipulate time-dependent logic (vesting, voting snapshots, price feeds)
+- Safe patterns recognized: var-get trusted hash, block-height validation,
+  read-only functions, private functions
+- MEDIUM severity, State Safety category
+- New test contract: at-block-test.clar (2 vulnerable + 5 safe/non-relevant)
+- 10 new tests in tests/test_at_block.py
+- Updated DETECTOR_SPECS: 92 → 93 detectors
+- Test suite: 267 → 277 tests, all passing
 
+## Previous (2026-03-18, 14:00)
+- Added Unvalidated Oracle Price Update detector (#92)
+- 9 tests, oracle-update-test.clar
