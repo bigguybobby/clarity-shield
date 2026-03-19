@@ -1,21 +1,31 @@
 # Clarity Shield — WORKING.md
 
 ## Status: Active Development
-**Version:** 2.23.0 | **Detectors:** 93 | **Tests:** 277 (all passing)
+**Version:** 2.24.0 | **Detectors:** 94 | **Tests:** 289 (all passing)
 **Deadline:** March 20, 2026 (Stacks BUIDL Battle, $20K prizes)
 
-## Latest Changes (2026-03-18, 22:00)
-- ✅ Added Unsafe at-block Usage detector (#93)
-- Detects public functions using (at-block) with caller-supplied block hashes
-  without validation — attackers can read stale state, bypass checks, or
-  manipulate time-dependent logic (vesting, voting snapshots, price feeds)
-- Safe patterns recognized: var-get trusted hash, block-height validation,
+## ⚠️ PENDING: Git commit blocked by Xcode license
+Run: `sudo xcodebuild -license accept` then:
+```
+cd ~/projects/stacks-hackathon/clarity-shield
+git add -A && git commit -m 'Add #94: Division by Zero Risk detector (DoS via unvalidated denominator)'
+```
+
+## Latest Changes (2026-03-19, 06:00)
+- ✅ Added Division by Zero Risk detector (#94)
+- Detects public functions dividing by user-controlled params or data-vars
+  without a zero-check — attackers can trigger a runtime abort (DoS)
+- Safe patterns recognized: asserts!/if zero-guards, constant denominators,
   read-only functions, private functions
-- MEDIUM severity, State Safety category
-- New test contract: at-block-test.clar (2 vulnerable + 5 safe/non-relevant)
-- 10 new tests in tests/test_at_block.py
-- Updated DETECTOR_SPECS: 92 → 93 detectors
-- Test suite: 267 → 277 tests, all passing
+- MEDIUM severity, Arithmetic Safety category
+- New test contract: division-by-zero-test.clar (3 vulnerable + 6 safe + 1 non-relevant)
+- 12 new tests in tests/test_division_by_zero.py
+- Updated README badge: 93 → 94 detectors
+- Test suite: 277 → 289 tests, all passing
+
+## Previous (2026-03-18, 22:00)
+- ✅ Added Unsafe at-block Usage detector (#93)
+- 10 tests, at-block-test.clar
 
 ## Previous (2026-03-18, 14:00)
 - Added Unvalidated Oracle Price Update detector (#92)

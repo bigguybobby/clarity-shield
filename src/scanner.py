@@ -301,6 +301,7 @@ class ClarityScanner:
         (91, "check_signature_replay"),
         (92, "check_unvalidated_oracle_update"),
         (93, "check_unsafe_at_block_usage"),
+        (94, "check_division_by_zero_risk"),
     ]
 
     def __init__(self, contract_path: str, config: Optional[Dict[str, Any]] = None):
@@ -4236,6 +4237,75 @@ class ClarityScanner:
                     "(3) restrict at-block usage to read-only functions."
                 ),
                 category="State Safety"
+            )
+
+
+    def check_division_by_zero_risk(self):
+        """#94 Detect division by potentially-zero denominator in public functions.
+
+        In Clarity, dividing by zero causes a runtime error that aborts the
+        entire transaction.  If the denominator is user-controlled (function
+        parameter) or comes from a data-var that can be zero (e.g. an empty
+        pool's total-shares), an attacker or edge-case scenario can trigger
+        a DoS by forcing the denominator to zero.
+
+        Safe patterns:
+        - Asserting denominator > u0 before dividing
+        - Using if/is-eq zero-check before division
+        - Dividing by a constant literal (u100, u1000000, etc.)
+        - Division in read-only or private functions (lower/no risk)
+        """
+        # Match (/ <numerator> <denominator>) — the denominator is any non-literal-uint expr
+        div_re = re.compile(r'\(/\s+')
+        literal_denom_re = re.compile(r'\(/\s+\S+\s+u\d+\)')
+        zero_check_patterns = [
+            re.compile(r'asserts!.*>\s+.+?\s+u0', re.IGNORECASE),
+            re.compile(r'asserts!.*is-eq\s+.+?\s+u0', re.IGNORECASE),
+            re.compile(r'if\s+\(is-eq\s+.+?\s+u0', re.IGNORECASE),
+            re.compile(r'if\s+\(>\s+.+?\s+u0', re.IGNORECASE),
+            re.compile(r'\(>\s+.+?\s+u0\)', re.IGNORECASE),
+        ]
+
+        for fn_name, fn_start, _, fn_lines in self._iter_function_blocks('public'):
+            fn_body = "\n".join(fn_lines)
+
+            # Skip if no division in this function
+            if not div_re.search(fn_body):
+                continue
+
+            # Skip if ALL divisions use constant denominators
+            divs_with_vars = False
+            for line in fn_lines:
+                stripped = self._strip_comments(line)
+                if div_re.search(stripped) and not literal_denom_re.search(stripped):
+                    divs_with_vars = True
+                    break
+
+            if not divs_with_vars:
+                continue
+
+            # Check if there's a zero-guard
+            has_zero_check = any(p.search(fn_body) for p in zero_check_patterns)
+            if has_zero_check:
+                continue
+
+            self.add_finding(
+                severity=Severity.MEDIUM,
+                title="Division by Zero Risk — Potential DoS",
+                description=(
+                    f"Public function '{fn_name}' performs division where the "
+                    f"denominator could be zero (user parameter or unguarded "
+                    f"data-var). In Clarity, division by zero aborts the "
+                    f"transaction, enabling a denial-of-service vector."
+                ),
+                line=fn_start + 1,
+                code_snippet=fn_body[:200],
+                recommendation=(
+                    "Add a zero-check before division: "
+                    "(asserts! (> denominator u0) (err ERR_ZERO_DIVISION)). "
+                    "Alternatively, handle the zero case with an if/is-eq guard."
+                ),
+                category="Arithmetic Safety"
             )
 
 
