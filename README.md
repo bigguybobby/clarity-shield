@@ -50,6 +50,7 @@ While Clarity's decidable and non-Turing-complete design provides inherent safet
   - Governance proposal execution without timelock — CRITICAL
   - Unvalidated trait parameter in public function — HIGH
 
+- 🏆 **Security Score**: A-F letter grade (0-100 scale) per contract — instant risk assessment at a glance
 - ⚙️ **Configurable Scans**: TOML/YAML config for detector enable/disable, severity defaults, and custom regex rules
 - 📊 **Multiple Output Formats**: JSON, Markdown, HTML, and SARIF reports
 - 🧾 **Summary Dashboard**: Compact per-contract severity table via `--summary`

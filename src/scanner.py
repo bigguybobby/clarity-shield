@@ -4309,14 +4309,59 @@ class ClarityScanner:
             )
 
 
+def compute_security_score(findings: List[Finding]) -> Tuple[str, int]:
+    """Compute a security score (0-100) and letter grade for a contract.
+
+    Scoring:
+    - Start at 100 points
+    - CRITICAL: -25 each
+    - HIGH: -15 each
+    - MEDIUM: -8 each
+    - LOW: -3 each
+    - INFO: -1 each
+    - Minimum score: 0
+
+    Grades: A (90-100), B (80-89), C (70-79), D (60-69), F (<60)
+    """
+    score = 100
+    for f in findings:
+        if f.severity == "CRITICAL":
+            score -= 25
+        elif f.severity == "HIGH":
+            score -= 15
+        elif f.severity == "MEDIUM":
+            score -= 8
+        elif f.severity == "LOW":
+            score -= 3
+        elif f.severity == "INFO":
+            score -= 1
+    score = max(0, score)
+
+    if score >= 90:
+        grade = "A"
+    elif score >= 80:
+        grade = "B"
+    elif score >= 70:
+        grade = "C"
+    elif score >= 60:
+        grade = "D"
+    else:
+        grade = "F"
+
+    return grade, score
+
+
 def generate_report(findings: List[Finding], contract_name: str, 
                    output_format: str = 'json') -> str:
     """Generate security report in JSON or Markdown format"""
     
     if output_format == 'json':
+        grade, score = compute_security_score(findings)
         report = {
             "contract": contract_name,
             "scan_date": datetime.now().strftime("%Y-%m-%d"),
+            "security_score": score,
+            "security_grade": grade,
             "total_findings": len(findings),
             "severity_breakdown": {
                 "CRITICAL": len([f for f in findings if f.severity == "CRITICAL"]),
@@ -4330,6 +4375,7 @@ def generate_report(findings: List[Finding], contract_name: str,
         return json.dumps(report, indent=2)
     
     elif output_format == 'markdown':
+        grade, score = compute_security_score(findings)
         severity_counts = {
             "CRITICAL": len([f for f in findings if f.severity == "CRITICAL"]),
             "HIGH": len([f for f in findings if f.severity == "HIGH"]),
@@ -4342,6 +4388,7 @@ def generate_report(findings: List[Finding], contract_name: str,
 
 **Contract:** `{contract_name}`  
 **Scan Date:** {datetime.now().strftime("%Y-%m-%d")}  
+**Security Score:** {grade} ({score}/100)  
 **Total Findings:** {len(findings)}
 
 ## Severity Breakdown
@@ -4504,8 +4551,8 @@ def collect_contracts(path: Path, recursive: bool = False) -> List[Path]:
 
 
 def print_summary_dashboard(all_findings: Dict[str, List[Finding]]) -> None:
-    """Print compact per-contract severity breakdown table."""
-    headers = ["Contract", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    """Print compact per-contract severity breakdown table with security score."""
+    headers = ["Contract", "Score", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
     rows: List[List[str]] = []
     for contract_name in sorted(all_findings.keys()):
         findings = all_findings[contract_name]
@@ -4513,9 +4560,11 @@ def print_summary_dashboard(all_findings: Dict[str, List[Finding]]) -> None:
             severity: sum(1 for finding in findings if finding.severity == severity)
             for severity in SEVERITY_ORDER
         }
+        grade, score = compute_security_score(findings)
         rows.append(
             [
                 contract_name,
+                f"{grade} ({score})",
                 str(counts["CRITICAL"]),
                 str(counts["HIGH"]),
                 str(counts["MEDIUM"]),
